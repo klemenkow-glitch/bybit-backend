@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const CryptoJS = require('crypto-js');
+const axios = require('axios');
 
 const app = express();
 app.use(cors());
@@ -16,38 +17,40 @@ app.post('/api/balance', async (req, res) => {
 
         const timestamp = Date.now().toString();
         const recvWindow = "5000";
-        const queryString = "accountType=UNIFIED";
-        const signOrigin = timestamp + apiKey + recvWindow + queryString;
-        const signature = CryptoJS.HmacSHA256(signOrigin, apiSecret).toString(CryptoJS.enc.Hex);
+        
+        // Najprej poskusimo z UNIFIED računom
+        let queryString = "accountType=UNIFIED";
+        let signOrigin = timestamp + apiKey + recvWindow + queryString;
+        let signature = CryptoJS.HmacSHA256(signOrigin, apiSecret).toString(CryptoJS.enc.Hex);
 
-        let response = await fetch(`https://api.bybit.com/v5/account/wallet-balance?${queryString}`, {
-            method: 'GET',
+        let response = await axios.get(`https://api.bybit.com/v5/account/wallet-balance?${queryString}`, {
             headers: {
                 'X-BAPI-API-KEY': apiKey,
                 'X-BAPI-SIGN': signature,
                 'X-BAPI-TIMESTAMP': timestamp,
                 'X-BAPI-RECV-WINDOW': recvWindow
-            }
+            },
+            validateStatus: () => true
         });
 
-        let data = await response.json();
+        let data = response.data;
 
-        // Če račun ni UNIFIED, poskusimo s SPOT
-        if (data && data.retCode !== 0) {
-            const querySpot = "accountType=SPOT";
-            const signSpot = timestamp + apiKey + recvWindow + querySpot;
-            const sigSpotHex = CryptoJS.HmacSHA256(signSpot, apiSecret).toString(CryptoJS.enc.Hex);
+        // Če UNIFIED ni omogočen ali vrne napako, poskusimo s SPOT
+        if (!data || data.retCode !== 0) {
+            queryString = "accountType=SPOT";
+            signOrigin = timestamp + apiKey + recvWindow + queryString;
+            signature = CryptoJS.HmacSHA256(signOrigin, apiSecret).toString(CryptoJS.enc.Hex);
 
-            response = await fetch(`https://api.bybit.com/v5/account/wallet-balance?${querySpot}`, {
-                method: 'GET',
+            response = await axios.get(`https://api.bybit.com/v5/account/wallet-balance?${queryString}`, {
                 headers: {
                     'X-BAPI-API-KEY': apiKey,
-                    'X-BAPI-SIGN': sigSpotHex,
+                    'X-BAPI-SIGN': signature,
                     'X-BAPI-TIMESTAMP': timestamp,
                     'X-BAPI-RECV-WINDOW': recvWindow
-                }
+                },
+                validateStatus: () => true
             });
-            data = await response.json();
+            data = response.data;
         }
 
         return res.json(data);
@@ -75,8 +78,7 @@ app.post('/api/order', async (req, res) => {
         const signOrigin = timestamp + apiKey + recvWindow + bodyString;
         const signature = CryptoJS.HmacSHA256(signOrigin, apiSecret).toString(CryptoJS.enc.Hex);
 
-        const response = await fetch('https://api.bybit.com/v5/order/create', {
-            method: 'POST',
+        const response = await axios.post('https://api.bybit.com/v5/order/create', body, {
             headers: {
                 'Content-Type': 'application/json',
                 'X-BAPI-API-KEY': apiKey,
@@ -84,11 +86,10 @@ app.post('/api/order', async (req, res) => {
                 'X-BAPI-TIMESTAMP': timestamp,
                 'X-BAPI-RECV-WINDOW': recvWindow
             },
-            body: bodyString
+            validateStatus: () => true
         });
 
-        const data = await response.json();
-        return res.json(data);
+        return res.json(response.data);
     } catch (err) {
         return res.status(500).json({ retCode: -500, retMsg: `Napaka pri naročilu: ${err.message}` });
     }
