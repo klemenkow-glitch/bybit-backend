@@ -7,7 +7,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Zahteva za stanje denarnice
 app.post('/api/balance', async (req, res) => {
     try {
         const { apiKey, apiSecret } = req.body;
@@ -17,49 +16,42 @@ app.post('/api/balance', async (req, res) => {
 
         const timestamp = Date.now().toString();
         const recvWindow = "5000";
-        
-        // Najprej poskusimo z UNIFIED računom
-        let queryString = "accountType=UNIFIED";
-        let signOrigin = timestamp + apiKey + recvWindow + queryString;
-        let signature = CryptoJS.HmacSHA256(signOrigin, apiSecret).toString(CryptoJS.enc.Hex);
 
-        let response = await axios.get(`https://api.bybit.com/v5/account/wallet-balance?${queryString}`, {
-            headers: {
-                'X-BAPI-API-KEY': apiKey,
-                'X-BAPI-SIGN': signature,
-                'X-BAPI-TIMESTAMP': timestamp,
-                'X-BAPI-RECV-WINDOW': recvWindow
-            },
-            validateStatus: () => true
-        });
+        async function callBybit(accountType) {
+            const queryString = `accountType=${accountType}`;
+            const signOrigin = timestamp + apiKey + recvWindow + queryString;
+            const signature = CryptoJS.HmacSHA256(signOrigin, apiSecret).toString(CryptoJS.enc.Hex);
 
-        let data = response.data;
-
-        // Če UNIFIED ni omogočen ali vrne napako, poskusimo s SPOT
-        if (!data || data.retCode !== 0) {
-            queryString = "accountType=SPOT";
-            signOrigin = timestamp + apiKey + recvWindow + queryString;
-            signature = CryptoJS.HmacSHA256(signOrigin, apiSecret).toString(CryptoJS.enc.Hex);
-
-            response = await axios.get(`https://api.bybit.com/v5/account/wallet-balance?${queryString}`, {
+            return await axios.get(`https://api.bybit.com/v5/account/wallet-balance?${queryString}`, {
                 headers: {
                     'X-BAPI-API-KEY': apiKey,
                     'X-BAPI-SIGN': signature,
                     'X-BAPI-TIMESTAMP': timestamp,
-                    'X-BAPI-RECV-WINDOW': recvWindow
+                    'X-BAPI-RECV-WINDOW': recvWindow,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
                 validateStatus: () => true
             });
+        }
+
+        let response = await callBybit("UNIFIED");
+        let data = response.data;
+
+        if (!data || typeof data !== 'object' || data.retCode !== 0) {
+            response = await callBybit("SPOT");
             data = response.data;
         }
 
-        return res.json(data);
+        if (data && typeof data === 'object') {
+            return res.json(data);
+        } else {
+            return res.status(500).json({ retCode: -500, retMsg: `Neveljaven odziv Bybita (HTTP ${response.status})` });
+        }
     } catch (err) {
         return res.status(500).json({ retCode: -500, retMsg: `Napaka na strežniku: ${err.message}` });
     }
 });
 
-// Zahteva za izvedbo naročila
 app.post('/api/order', async (req, res) => {
     try {
         const { apiKey, apiSecret, symbol, side, qty } = req.body;
@@ -84,7 +76,8 @@ app.post('/api/order', async (req, res) => {
                 'X-BAPI-API-KEY': apiKey,
                 'X-BAPI-SIGN': signature,
                 'X-BAPI-TIMESTAMP': timestamp,
-                'X-BAPI-RECV-WINDOW': recvWindow
+                'X-BAPI-RECV-WINDOW': recvWindow,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             },
             validateStatus: () => true
         });
