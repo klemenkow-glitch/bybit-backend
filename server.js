@@ -8,11 +8,25 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 const BYBIT_URL = 'https://api.bybit.com'; // MAINNET
-const { BYBIT_API_KEY, BYBIT_API_SECRET, APP_PASSWORD } = process.env;
+const BYBIT_API_KEY = (process.env.BYBIT_API_KEY || '').trim();
+const BYBIT_API_SECRET = (process.env.BYBIT_API_SECRET || '').trim();
+const APP_PASSWORD = (process.env.APP_PASSWORD || '').trim();
+
+// Diagnostika (ne razkrije gesla, samo dolžino)
+app.get('/api/health', (req, res) => {
+    res.json({
+        passwordSet: APP_PASSWORD.length > 0,
+        passwordLength: APP_PASSWORD.length,
+        keySet: BYBIT_API_KEY.length > 0,
+        secretSet: BYBIT_API_SECRET.length > 0
+    });
+});
 
 app.post('/api/balance', async (req, res) => {
     try {
-        if (!APP_PASSWORD || req.body?.password !== APP_PASSWORD) {
+        const sentPassword = String(req.body?.password || '').trim();
+
+        if (!APP_PASSWORD || sentPassword !== APP_PASSWORD) {
             return res.status(401).json({ status: 'error', code: 401, message: 'Napačno geslo.' });
         }
         if (!BYBIT_API_KEY || !BYBIT_API_SECRET) {
@@ -44,16 +58,4 @@ app.post('/api/balance', async (req, res) => {
         const data = response.data;
         if (!data || typeof data !== 'object') {
             return res.json({ status: 'error', code: response.status,
-                message: `Bybit ni vrnil JSON (HTTP ${response.status}). Verjetno blokada regije/IP strežnika.` });
-        }
-        if (data.retCode === 0) {
-            return res.json({ status: 'success', code: 0, message: 'Povezano uspešno!', data: data.result });
-        }
-        return res.json({ status: 'error', code: data.retCode ?? -1, message: data.retMsg || 'Neznana napaka pri Bybitu' });
-    } catch (err) {
-        return res.json({ status: 'error', code: -500, message: `Napaka strežnika: ${err.message}` });
-    }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Strežnik teče na portu ${PORT}`));
+                message: `Bybit ni vrnil JSON (HTTP ${response.status}). Verjetno blokada regije/IP strežnika.`
