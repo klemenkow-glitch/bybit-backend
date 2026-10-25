@@ -12,14 +12,43 @@ const BYBIT_API_KEY = (process.env.BYBIT_API_KEY || '').trim();
 const BYBIT_API_SECRET = (process.env.BYBIT_API_SECRET || '').trim();
 const APP_PASSWORD = (process.env.APP_PASSWORD || '').trim();
 
-// Diagnostika (ne razkrije gesla, samo dolžino)
+function snippet(body) {
+    try {
+        const s = typeof body === 'string' ? body : JSON.stringify(body);
+        return (s || '(prazno)').replace(/\s+/g, ' ').slice(0, 200);
+    } catch {
+        return '(ni berljivo)';
+    }
+}
+
 app.get('/api/health', (req, res) => {
     res.json({
         passwordSet: APP_PASSWORD.length > 0,
         passwordLength: APP_PASSWORD.length,
         keySet: BYBIT_API_KEY.length > 0,
-        secretSet: BYBIT_API_SECRET.length > 0
+        keyLength: BYBIT_API_KEY.length,
+        secretSet: BYBIT_API_SECRET.length > 0,
+        secretLength: BYBIT_API_SECRET.length
     });
+});
+
+// Diagnostika: javni klic brez ključa + IP strežnika
+app.get('/api/diag', async (req, res) => {
+    const out = {};
+    try {
+        const r = await axios.get(`${BYBIT_URL}/v5/market/time`, { timeout: 15000, validateStatus: () => true });
+        out.bybitPublicStatus = r.status;
+        out.bybitPublicBody = snippet(r.data);
+    } catch (e) {
+        out.bybitPublicError = e.message;
+    }
+    try {
+        const ip = await axios.get('https://api.ipify.org?format=json', { timeout: 10000 });
+        out.serverIp = ip.data.ip;
+    } catch (e) {
+        out.serverIpError = e.message;
+    }
+    res.json(out);
 });
 
 app.post('/api/balance', async (req, res) => {
@@ -57,8 +86,11 @@ app.post('/api/balance', async (req, res) => {
 
         const data = response.data;
         if (!data || typeof data !== 'object') {
-            return res.json({ status: 'error', code: response.status,
-                message: `Bybit ni vrnil JSON (HTTP ${response.status}). Verjetno blokada regije/IP strežnika.` });
+            return res.json({
+                status: 'error',
+                code: response.status,
+                message: `Bybit ni vrnil JSON (HTTP ${response.status}). Odgovor: ${snippet(data)}`
+            });
         }
         if (data.retCode === 0) {
             return res.json({ status: 'success', code: 0, message: 'Povezano uspešno!', data: data.result });
