@@ -3,254 +3,228 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bybit Trading Terminal</title>
+    <title>Bybit Trading Terminal (MAINNET)</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121214; color: #fff; padding: 20px; margin: 0; }
-        .container { max-width: 640px; margin: auto; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121214; color: #ffffff; padding: 20px; margin: 0; }
+        .container { max-width: 600px; margin: auto; }
         .card { background-color: #1e1e22; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
         h2, h3 { margin-top: 0; color: #f7a600; }
         label { font-size: 13px; color: #aaa; display: block; margin-top: 10px; }
-        input, select, button { width: 100%; padding: 12px; margin: 6px 0; border-radius: 4px; border: none; box-sizing: border-box; font-size: 16px; }
+        input, select, button { width: 100%; padding: 12px; margin: 6px 0; border-radius: 4px; border: none; box-sizing: border-box; font-size: 14px; }
         input, select { background-color: #2b2b30; color: #fff; }
         button { font-weight: bold; cursor: pointer; transition: 0.2s; }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
         .btn-connect { background-color: #f7a600; color: #000; }
         .btn-connect:hover { background-color: #e09600; }
+        .btn-transfer { background-color: #2196F3; color: #fff; margin-top: 10px; }
         .btn-buy { background-color: #4CAF50; color: #fff; width: 48%; float: left; }
+        .btn-buy:hover { background-color: #45a049; }
         .btn-sell { background-color: #f44336; color: #fff; width: 48%; float: right; }
-        .btn-transfer { background-color: #3a7bd5; color: #fff; }
+        .btn-sell:hover { background-color: #da190b; }
         .clear { clear: both; }
-        .status { margin-top: 15px; padding: 12px; border-radius: 4px; background: #2b2b30; word-break: break-word; font-size: 13px; }
-        .warn { color: #f7a600; font-size: 12px; margin-top: 8px; }
+        .status { margin-top: 15px; padding: 12px; border-radius: 4px; background: #2b2b30; word-break: break-all; font-size: 13px; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { text-align: left; padding: 8px; border-bottom: 1px solid #333; font-size: 14px; }
         th { color: #f7a600; }
     </style>
 </head>
 <body>
-<div class="container">
 
+<div class="container">
+    <!-- KLJUČI IN POVEZAVA -->
     <div class="card">
         <h2>Bybit Terminal (MAINNET)</h2>
-        <label>Geslo aplikacije:</label>
-        <input type="password" id="password" placeholder="Geslo aplikacije" autocomplete="current-password">
-        <button class="btn-connect" id="connectBtn">Poveži in osveži stanje</button>
+        
+        <label>API Key:</label>
+        <input type="text" id="apiKey" placeholder="Vnesite Bybit API Key">
+
+        <label>API Secret:</label>
+        <input type="password" id="apiSecret" placeholder="Vnesite Bybit API Secret">
+
+        <button class="btn-connect" onclick="connectAndFetch()">Shrani in Osveži Stanje</button>
+
         <div class="status" id="statusBox">Status: <b>Čakam na povezavo...</b></div>
     </div>
 
+    <!-- PREGLED SREDSTEV -->
     <div class="card">
-        <h3>Vaša sredstva na Bybitu</h3>
+        <h3>Vaša Sredstva na Bybitu</h3>
         <table>
-            <thead><tr><th>Valuta</th><th>Račun</th><th>Skupno</th><th>Na voljo</th></tr></thead>
+            <thead>
+                <tr>
+                    <th>Valuta</th>
+                    <th>Račun</th>
+                    <th>Skupno</th>
+                    <th>Na voljo</th>
+                </tr>
+            </thead>
             <tbody id="balanceTable">
-                <tr><td colspan="4" style="text-align:center; color:#777;">Ni podatkov. Vnesite geslo zgoraj.</td></tr>
+                <tr><td colspan="4" style="text-align:center; color:#777;">Ni podatkov. Vnesite ključe zgoraj.</td></tr>
             </tbody>
         </table>
-        <div class="warn" id="warnBox"></div>
+
+        <!-- HITRI PRENOS SREDSTEV -->
+        <div style="margin-top: 15px; border-top: 1px solid #333; padding-top: 10px;">
+            <label>Prenos iz Funding na Unified (za trgovanje):</label>
+            <div style="display: flex; gap: 8px;">
+                <input type="text" id="transferCoin" value="EUR" style="width: 30%;" placeholder="Kovanec">
+                <input type="number" id="transferAmount" value="26" style="width: 40%;" placeholder="Znesek">
+                <button class="btn-transfer" style="width: 30%; margin: 6px 0;" onclick="transferToUnified()">Prenesi</button>
+            </div>
+            <div id="transferStatus" style="font-size: 12px; margin-top: 5px;"></div>
+        </div>
     </div>
 
+    <!-- HITRO TRGOVANJE -->
     <div class="card">
-        <h3>Hitro trgovanje (Market Order)</h3>
-
-        <label>Trg:</label>
-        <select id="tradeCategory">
-            <option value="spot">Spot</option>
-        </select>
-
-        <label>Trgovalni par (Symbol):</label>
-        <input type="text" id="tradeSymbol" value="BTCUSDT" list="symbols" placeholder="npr. BTCUSDT, BTCEUR, EURUSDT" autocapitalize="characters">
-        <datalist id="symbols">
-            <option value="BTCUSDT"><option value="ETHUSDT"><option value="BTCEUR"><option value="ETHEUR"><option value="EURUSDT">
-        </datalist>
-
-        <label>Enota količine:</label>
-        <select id="tradeUnit">
-            <option value="baseCoin">Osnovni kovanec (npr. BTC pri BTCUSDT)</option>
-            <option value="quoteCoin">Kotirni kovanec (npr. EUR pri BTCEUR, USDT pri BTCUSDT)</option>
-        </select>
+        <h3>Hitro Trgovanje (Market Order)</h3>
+        
+        <label>Trgovalni Par (Symbol):</label>
+        <input type="text" id="tradeSymbol" value="EURUSDT" placeholder="npr. EURUSDT ali BTCUSDT">
 
         <label>Količina:</label>
-        <input type="number" step="any" id="tradeQty" placeholder="npr. 0.001 ali 20">
+        <input type="number" step="any" id="tradeQty" placeholder="Količina za nakup/prodajo">
 
         <div style="margin-top: 15px;">
-            <button class="btn-buy" id="buyBtn">KUPI (BUY)</button>
-            <button class="btn-sell" id="sellBtn">PRODAJ (SELL)</button>
+            <button class="btn-buy" onclick="executeOrder('Buy')">KUPI (BUY)</button>
+            <button class="btn-sell" onclick="executeOrder('Sell')">PRODAJ (SELL)</button>
             <div class="clear"></div>
         </div>
 
         <div class="status" id="orderStatusBox">Naročilo: <b>Pripravljeno</b></div>
     </div>
-
-    <div class="card">
-        <h3>Prenos med računi</h3>
-        <div style="font-size:12px;color:#aaa;">Trgovanje poteka z računa Unified. Sredstva v Funding morate najprej prenesti sem.</div>
-
-        <label>Smer:</label>
-        <select id="transferDir">
-            <option value="FUND:UNIFIED">Funding → Unified (za trgovanje)</option>
-            <option value="UNIFIED:FUND">Unified → Funding</option>
-        </select>
-
-        <label>Kovanec:</label>
-        <input type="text" id="transferCoin" value="EUR" autocapitalize="characters">
-
-        <label>Znesek:</label>
-        <input type="number" step="any" id="transferAmount" placeholder="npr. 26">
-
-        <button class="btn-transfer" id="transferBtn">Prenesi</button>
-        <div class="status" id="transferStatusBox">Prenos: <b>Pripravljen</b></div>
-    </div>
 </div>
 
 <script>
-    const $ = id => document.getElementById(id);
-    const esc = s => { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; };
-    const normSymbol = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-    const fmt = n => Number(n).toLocaleString('en-US', { maximumFractionDigits: 8, useGrouping: false });
-    const ACCOUNT_LABEL = { UNIFIED: 'Unified (trgovanje)', FUND: 'Funding', SPOT: 'Spot' };
+    const BACKEND_URL = 'http://localhost:3000';
 
-    async function post(url, payload) {
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        const text = await res.text();
-        try { return JSON.parse(text); }
-        catch { throw new Error(`Odgovor ni JSON (HTTP ${res.status})`); }
-    }
+    async function connectAndFetch() {
+        const apiKey = document.getElementById('apiKey').value.trim();
+        const apiSecret = document.getElementById('apiSecret').value.trim();
+        const statusBox = document.getElementById('statusBox');
+        const balanceTable = document.getElementById('balanceTable');
 
-    async function refreshBalance() {
-        const password = $('password').value;
-        const box = $('statusBox');
-        const table = $('balanceTable');
-        const warnBox = $('warnBox');
-        if (!password) { alert('Vnesite geslo!'); return false; }
+        if (!apiKey || !apiSecret) {
+            alert('Prosimo, vnesite oba API ključa!');
+            return;
+        }
 
-        box.style.color = '#fff';
-        box.textContent = 'Pridobivam stanje iz Bybita...';
-        $('connectBtn').disabled = true;
+        statusBox.style.color = '#ffffff';
+        statusBox.innerHTML = 'Pridobivam stanje iz Bybita...';
 
         try {
-            const d = await post('/api/balance', { password });
-            if (d.status === 'success') {
-                const eq = d.data?.totalEquity;
-                box.style.color = '#4CAF50';
-                box.innerHTML = `<b>Povezano uspešno!</b><br>Total Equity (Unified): ${eq == null ? 'n/a' : esc(eq.toFixed(2)) + ' USD'}`;
+            const res = await fetch(`${BACKEND_URL}/api/balance`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ apiKey, apiSecret })
+            });
 
-                const coins = d.data?.coins || [];
-                if (coins.length) {
-                    table.innerHTML = coins.map(c => `
-                        <tr>
-                            <td><b>${esc(c.coin)}</b></td>
-                            <td>${esc(ACCOUNT_LABEL[c.account] || c.account)}</td>
-                            <td>${esc(fmt(c.total))}</td>
-                            <td>${esc(fmt(c.free))}</td>
-                        </tr>`).join('');
+            const resData = await res.json();
+
+            if (resData.status === 'success' || resData.retCode === 0) {
+                statusBox.style.color = '#4CAF50';
+                statusBox.innerHTML = '<b>Povezano uspešno!</b> Stanje osveženo.';
+
+                const coins = resData.data?.list?.[0]?.coin || resData.result?.list?.[0]?.coin || resData.balances || [];
+                
+                if (coins.length > 0) {
+                    balanceTable.innerHTML = '';
+                    coins.forEach(c => {
+                        const bal = parseFloat(c.walletBalance || c.transferBalance || c.equity || 0);
+                        if (bal > 0) {
+                            balanceTable.innerHTML += `
+                                <tr>
+                                    <td><b>${c.coin || c.currency}</b></td>
+                                    <td>${c.accountType || 'Funding/Unified'}</td>
+                                    <td>${bal.toFixed(2)}</td>
+                                    <td>${bal.toFixed(2)}</td>
+                                </tr>
+                            `;
+                        }
+                    });
                 } else {
-                    table.innerHTML = '<tr><td colspan="4" style="text-align:center;">Na preverjenih računih ni sredstev (stanja so 0).</td></tr>';
+                    balanceTable.innerHTML = '<tr><td colspan="4" style="text-align:center;">Na računu ni najdenih sredstev nad 0.</td></tr>';
                 }
-
-                const w = d.data?.warnings || [];
-                warnBox.innerHTML = w.length ? 'Opozorila:<br>' + w.map(esc).join('<br>') : '';
-                return true;
             } else {
-                box.style.color = '#f44336';
-                box.innerHTML = `<b>Napaka (${esc(d.code ?? 'N/A')}):</b> ${esc(d.message)}`;
-                return false;
+                statusBox.style.color = '#f44336';
+                statusBox.innerHTML = `<b>Napaka:</b> ${resData.message || resData.retMsg || 'Neznana napaka'}`;
             }
         } catch (err) {
-            box.style.color = '#f44336';
-            box.innerHTML = `<b>Napaka:</b> ${esc(err.message)}`;
-            return false;
-        } finally {
-            $('connectBtn').disabled = false;
+            statusBox.style.color = '#f44336';
+            statusBox.innerHTML = `<b>Lokalna napaka:</b> Preverite, ali teče 'node server.js'.`;
+        }
+    }
+
+    async function transferToUnified() {
+        const apiKey = document.getElementById('apiKey').value.trim();
+        const apiSecret = document.getElementById('apiSecret').value.trim();
+        const coin = document.getElementById('transferCoin').value.trim().toUpperCase();
+        const amount = document.getElementById('transferAmount').value.trim();
+        const status = document.getElementById('transferStatus');
+
+        status.style.color = '#fff';
+        status.innerHTML = 'Prenašam sredstva...';
+
+        try {
+            const res = await fetch(`${BACKEND_URL}/api/transfer`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ apiKey, apiSecret, coin, amount, fromType: 'FUND', toType: 'UNIFIED' })
+            });
+
+            const data = await res.json();
+
+            if (data.retCode === 0 || data.status === 'success') {
+                status.style.color = '#4CAF50';
+                status.innerHTML = '<b>Prenos uspešen!</b> Sredstva so pripravljena za trgovanje.';
+                setTimeout(connectAndFetch, 1000);
+            } else {
+                status.style.color = '#f44336';
+                status.innerHTML = `<b>Napaka pri prenosu:</b> ${data.retMsg || data.message}`;
+            }
+        } catch (err) {
+            status.style.color = '#f44336';
+            status.innerHTML = `<b>Lokalna napaka pri prenosu.</b>`;
         }
     }
 
     async function executeOrder(side) {
-        const password = $('password').value;
-        const symbol = normSymbol($('tradeSymbol').value);
-        const qty = $('tradeQty').value.trim();
-        const marketUnit = $('tradeUnit').value;
-        const box = $('orderStatusBox');
+        const apiKey = document.getElementById('apiKey').value.trim();
+        const apiSecret = document.getElementById('apiSecret').value.trim();
+        const symbol = document.getElementById('tradeSymbol').value.trim().toUpperCase();
+        const qty = document.getElementById('tradeQty').value.trim();
+        const orderStatusBox = document.getElementById('orderStatusBox');
 
-        if (!password) return alert('Najprej vnesite geslo!');
-        if (!symbol || !qty || parseFloat(qty) <= 0) return alert('Vnesite veljaven par in količino!');
+        if (!symbol || !qty || parseFloat(qty) <= 0) {
+            alert('Vnesite veljaven trgovalni par in količino!');
+            return;
+        }
 
-        const unitText = marketUnit === 'baseCoin' ? 'osnovni kovanec' : 'kotirni kovanec';
-        const label = side === 'Buy' ? 'KUPI' : 'PRODAJ';
-        if (!confirm(`${label} ${symbol}, količina ${qty} (${unitText}), po tržni ceni?\n\nTo je pravi denar na pravem računu.`)) return;
-
-        box.style.color = '#fff';
-        box.textContent = `Pošiljam ${side} naročilo za ${symbol}...`;
-        $('buyBtn').disabled = true;
-        $('sellBtn').disabled = true;
+        orderStatusBox.style.color = '#ffffff';
+        orderStatusBox.innerHTML = `Pošiljam ${side} naročilo za ${qty} ${symbol}...`;
 
         try {
-            const d = await post('/api/order', { password, symbol, side, qty, marketUnit });
-            if (d.status === 'success') {
-                let extra = '';
-                if (d.fill) {
-                    extra = `<br>Status: ${esc(d.fill.status)}`
-                        + (d.fill.avgPrice && d.fill.avgPrice !== '0' ? `, povp. cena: ${esc(d.fill.avgPrice)}` : '')
-                        + (d.fill.execQty && d.fill.execQty !== '0' ? `, izvedeno: ${esc(d.fill.execQty)}` : '');
-                }
-                box.style.color = '#4CAF50';
-                box.innerHTML = `<b>Naročilo oddano!</b> (${esc(side)} ${esc(qty)} ${esc(symbol)})<br>ID: ${esc(d.data?.orderId || 'n/a')}${extra}`;
-                // Takojšnje in ponovno osveževanje stanja
-                await refreshBalance();
-                setTimeout(refreshBalance, 3000);
+            const res = await fetch(`${BACKEND_URL}/api/order`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ apiKey, apiSecret, symbol, side, qty })
+            });
+
+            const data = await res.json();
+
+            if (data.retCode === 0 || data.status === 'success') {
+                orderStatusBox.style.color = '#4CAF50';
+                orderStatusBox.innerHTML = `<b>Naročilo USPEŠNO!</b> (${side} ${qty} ${symbol})`;
+                setTimeout(connectAndFetch, 1500);
             } else {
-                box.style.color = '#f44336';
-                box.innerHTML = `<b>Napaka pri naročilu (${esc(d.code ?? 'N/A')}):</b> ${esc(d.message)}`;
+                orderStatusBox.style.color = '#f44336';
+                orderStatusBox.innerHTML = `<b>Napaka pri naročilu (${data.retCode || data.code}):</b> ${data.retMsg || data.message}`;
             }
         } catch (err) {
-            box.style.color = '#f44336';
-            box.innerHTML = `<b>Napaka:</b> ${esc(err.message)}`;
-        } finally {
-            $('buyBtn').disabled = false;
-            $('sellBtn').disabled = false;
+            orderStatusBox.style.color = '#f44336';
+            orderStatusBox.innerHTML = `<b>Lokalna napaka:</b> ${err.message}`;
         }
     }
-
-    async function doTransfer() {
-        const password = $('password').value;
-        const [from, to] = $('transferDir').value.split(':');
-        const coin = normSymbol($('transferCoin').value);
-        const amount = $('transferAmount').value.trim();
-        const box = $('transferStatusBox');
-
-        if (!password) return alert('Najprej vnesite geslo!');
-        if (!coin || !amount || parseFloat(amount) <= 0) return alert('Vnesite kovanec in znesek!');
-        if (!confirm(`Prenos ${amount} ${coin}: ${from} → ${to}?`)) return;
-
-        box.style.color = '#fff';
-        box.textContent = 'Izvajam prenos...';
-        $('transferBtn').disabled = true;
-
-        try {
-            const d = await post('/api/transfer', { password, coin, amount, from, to });
-            if (d.status === 'success') {
-                box.style.color = '#4CAF50';
-                box.innerHTML = `<b>Prenos izveden!</b> ${esc(amount)} ${esc(coin)} (${esc(from)} → ${esc(to)})`;
-                await refreshBalance();
-            } else {
-                box.style.color = '#f44336';
-                box.innerHTML = `<b>Napaka pri prenosu (${esc(d.code ?? 'N/A')}):</b> ${esc(d.message)}`;
-            }
-        } catch (err) {
-            box.style.color = '#f44336';
-            box.innerHTML = `<b>Napaka:</b> ${esc(err.message)}`;
-        } finally {
-            $('transferBtn').disabled = false;
-        }
-    }
-
-    $('connectBtn').addEventListener('click', refreshBalance);
-    $('buyBtn').addEventListener('click', () => executeOrder('Buy'));
-    $('sellBtn').addEventListener('click', () => executeOrder('Sell'));
-    $('transferBtn').addEventListener('click', doTransfer);
 </script>
+
 </body>
 </html>
