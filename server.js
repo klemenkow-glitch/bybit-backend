@@ -4,13 +4,15 @@ const axios = require('axios');
 const path = require('path');
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-const BYBIT_URL = (process.env.BYBIT_BASE_URL || 'https://api.bybit.com').trim();
-const BYBIT_API_KEY = (process.env.BYBIT_API_KEY || '').trim();
-const BYBIT_API_SECRET = (process.env.BYBIT_API_SECRET || '').trim();
+const BYBIT_URL = (process.env.BYBIT_BASE_URL || 'https://api.bybit.eu').trim();
+const API_KEY = (process.env.BYBIT_API_KEY || '').trim();
+const API_SECRET = (process.env.BYBIT_API_SECRET || '').trim();
 const APP_PASSWORD = (process.env.APP_PASSWORD || '').trim();
+const RECV_WINDOW = '10000';
 
 function snippet(body) {
     try {
@@ -21,81 +23,127 @@ function snippet(body) {
     }
 }
 
+// ---- Zaščita gesla: zaklep po 5 napačnih poskusih za 15 minut ----
+const fails = new Map();
+const MAX_FAILS = 5;
+const LOCK_MS = 15 * 60 * 1000;
+
+function sha(s) { return crypto.createHash('sha256').update(String(s)).digest(); }
+
+function checkAuth(req, res) {
+    const ip = req.ip;
+    const rec = fails.get(ip) || { count: 0, lockUntil: 0 };
+    if (rec.lockUntil > Date.now()) {
+        const min = Math.ceil((rec.lockUntil - Date.now()) / 60000);
+        res.status(429).json({ status: 'error', code: 429, message: `Preveč napačnih poskusov. Poskusite čez ${min} min.` });
+        return false;
+    }
+    const sent = String(req.body?.password || '').trim();
+    const ok = APP_PASSWORD.length > 0 && crypto.timingSafeEqual(sha(sent), sha(APP_PASSWORD));
+    if (!ok) {
+        rec.count += 1;
+        if (rec.count >= MAX_FAILS) { rec.lockUntil = Date.now() + LOCK_MS; rec.count = 0; }
+        fails.set(ip, rec);
+        res.status(401).json({ status: 'error', code: 401, message: 'Napačno geslo.' });
+        return false;
+    }
+    fails.delete(ip);
+    return true;
+}
+
+// ---- Podpisan klic na Bybit ----
+async function bybit(method, apiPath, { query = '', body = null } = {}) {
+    const timestamp = Date.now().toString();
+    const bodyStr = body ? JSON.stringify(body) : '';
+    const payload = method === 'GET' ? query : bodyStr;
+    const signature = crypto
+        .createHmac('sha256', API_SECRET)
+        .update(timestamp + API_KEY + RECV_WINDOW + payload)
+        .digest('hex');
+
+    const headers = {
+        'X-BAPI-API-KEY': API_KEY,
+        'X-BAPI-SIGN': signature,
+        'X-BAPI-TIMESTAMP': timestamp,
+        'X-BAPI-RECV-WINDOW': RECV_WINDOW
+    };
+    const url = `${BYBIT_URL}${apiPath}${method === 'GET' && query ? '?' + query : ''}`;
+    let response;
+    if (method === 'GET') {
+        response = await axios.get(url, { headers, timeout: 15000, validateStatus: () => true });
+    } else {
+        headers['Content-Type'] = 'application/json';
+        response = await axios.post(url, bodyStr, { headers, timeout: 15000, validateStatus: () => true });
+    }
+    const data = response.data;
+    if (!data || typeof data !== 'object') {
+        return { ok: false, code: response.status, message: `Bybit ni vrnil JSON (HTTP ${response.status}). Odgovor: ${snippet(data)}` };
+    }
+    if (data.retCode === 0) return { ok: true, result: data.result };
+    return { ok: false, code: data.retCode ?? -1, message: data.retMsg || 'Neznana napaka pri Bybitu' };
+}
+
+function keysMissing(res) {
+    if (!API_KEY || !API_SECRET) {
+        res.json({ status: 'error', code: -400, message: 'Na strežniku manjkata BYBIT_API_KEY / BYBIT_API_SECRET.' });
+        return true;
+    }
+    return false;
+}
+
 app.get('/api/health', (req, res) => {
     res.json({
         passwordSet: APP_PASSWORD.length > 0,
-        passwordLength: APP_PASSWORD.length,
-        keySet: BYBIT_API_KEY.length > 0,
-        keyLength: BYBIT_API_KEY.length,
-        secretSet: BYBIT_API_SECRET.length > 0,
-        secretLength: BYBIT_API_SECRET.length
+        keySet: API_KEY.length > 0,
+        secretSet: API_SECRET.length > 0,
+        baseUrl: BYBIT_URL
     });
 });
 
-// Diagnostika: javni klic brez ključa + IP strežnika
-app.get('/api/diag', async (req, res) => {
-    const out = {};
-    try {
-        const r = await axios.get(`${BYBIT_URL}/v5/market/time`, { timeout: 15000, validateStatus: () => true });
-        out.bybitPublicStatus = r.status;
-        out.bybitPublicBody = snippet(r.data);
-    } catch (e) {
-        out.bybitPublicError = e.message;
-    }
-    try {
-        const ip = await axios.get('https://api.ipify.org?format=json', { timeout: 10000 });
-        out.serverIp = ip.data.ip;
-    } catch (e) {
-        out.serverIpError = e.message;
-    }
-    res.json(out);
-});
-
+// ---- Stanje sredstev ----
 app.post('/api/balance', async (req, res) => {
     try {
-        const sentPassword = String(req.body?.password || '').trim();
+        if (!checkAuth(req, res)) return;
+        if (keysMissing(res)) return;
+        const r = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
+        if (!r.ok) return res.json({ status: 'error', code: r.code, message: r.message });
+        return res.json({ status: 'success', code: 0, message: 'Povezano uspešno!', data: r.result });
+    } catch (err) {
+        return res.json({ status: 'error', code: -500, message: `Napaka strežnika: ${err.message}` });
+    }
+});
 
-        if (!APP_PASSWORD || sentPassword !== APP_PASSWORD) {
-            return res.status(401).json({ status: 'error', code: 401, message: 'Napačno geslo.' });
+// ---- Market naročilo ----
+app.post('/api/order', async (req, res) => {
+    try {
+        if (!checkAuth(req, res)) return;
+        if (keysMissing(res)) return;
+
+        const symbol = String(req.body?.symbol || '').trim().toUpperCase();
+        const side = String(req.body?.side || '');
+        const qty = String(req.body?.qty || '').trim();
+        const category = String(req.body?.category || 'spot');
+
+        if (!/^[A-Z0-9]{5,20}$/.test(symbol)) {
+            return res.json({ status: 'error', code: -422, message: 'Neveljaven trgovalni par.' });
         }
-        if (!BYBIT_API_KEY || !BYBIT_API_SECRET) {
-            return res.json({ status: 'error', code: -400, message: 'Na strežniku manjkata BYBIT_API_KEY / BYBIT_API_SECRET.' });
+        if (side !== 'Buy' && side !== 'Sell') {
+            return res.json({ status: 'error', code: -422, message: 'Neveljavna stran (Buy/Sell).' });
+        }
+        if (!/^\d+(\.\d+)?$/.test(qty) || parseFloat(qty) <= 0) {
+            return res.json({ status: 'error', code: -422, message: 'Neveljavna količina.' });
+        }
+        if (category !== 'spot' && category !== 'linear') {
+            return res.json({ status: 'error', code: -422, message: 'Neveljavna kategorija.' });
         }
 
-        const timestamp = Date.now().toString();
-        const recvWindow = '10000';
-        const queryString = 'accountType=UNIFIED';
-        const signature = crypto
-            .createHmac('sha256', BYBIT_API_SECRET)
-            .update(timestamp + BYBIT_API_KEY + recvWindow + queryString)
-            .digest('hex');
+        const order = { category, symbol, side, orderType: 'Market', qty };
+        if (category === 'spot') order.marketUnit = 'baseCoin'; // količina v osnovnem kovancu (npr. BTC)
+        order.orderLinkId = `term-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
 
-        const response = await axios.get(
-            `${BYBIT_URL}/v5/account/wallet-balance?${queryString}`,
-            {
-                headers: {
-                    'X-BAPI-API-KEY': BYBIT_API_KEY,
-                    'X-BAPI-SIGN': signature,
-                    'X-BAPI-TIMESTAMP': timestamp,
-                    'X-BAPI-RECV-WINDOW': recvWindow
-                },
-                timeout: 15000,
-                validateStatus: () => true
-            }
-        );
-
-        const data = response.data;
-        if (!data || typeof data !== 'object') {
-            return res.json({
-                status: 'error',
-                code: response.status,
-                message: `Bybit ni vrnil JSON (HTTP ${response.status}). Odgovor: ${snippet(data)}`
-            });
-        }
-        if (data.retCode === 0) {
-            return res.json({ status: 'success', code: 0, message: 'Povezano uspešno!', data: data.result });
-        }
-        return res.json({ status: 'error', code: data.retCode ?? -1, message: data.retMsg || 'Neznana napaka pri Bybitu' });
+        const r = await bybit('POST', '/v5/order/create', { body: order });
+        if (!r.ok) return res.json({ status: 'error', code: r.code, message: r.message });
+        return res.json({ status: 'success', code: 0, message: 'Naročilo oddano.', data: r.result });
     } catch (err) {
         return res.json({ status: 'error', code: -500, message: `Napaka strežnika: ${err.message}` });
     }
