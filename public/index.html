@@ -5,47 +5,115 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bybit Trading Terminal</title>
     <style>
-        body { font-family: Arial, sans-serif; background:#121214; color:#fff; padding:20px; }
-        .card { background:#1e1e22; padding:20px; border-radius:8px; max-width:500px; margin:auto; }
-        input, button { width:100%; padding:12px; margin:8px 0; border-radius:4px; border:none; box-sizing:border-box; font-size:16px; }
-        input { background:#2b2b30; color:#fff; }
-        button { background:#f7a600; color:#000; font-weight:bold; cursor:pointer; }
-        .status { margin-top:15px; padding:12px; border-radius:4px; background:#2b2b30; word-break:break-all; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121214; color: #fff; padding: 20px; margin: 0; }
+        .container { max-width: 600px; margin: auto; }
+        .card { background-color: #1e1e22; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+        h2, h3 { margin-top: 0; color: #f7a600; }
+        label { font-size: 13px; color: #aaa; display: block; margin-top: 10px; }
+        input, select, button { width: 100%; padding: 12px; margin: 6px 0; border-radius: 4px; border: none; box-sizing: border-box; font-size: 16px; }
+        input, select { background-color: #2b2b30; color: #fff; }
+        button { font-weight: bold; cursor: pointer; transition: 0.2s; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-connect { background-color: #f7a600; color: #000; }
+        .btn-connect:hover { background-color: #e09600; }
+        .btn-buy { background-color: #4CAF50; color: #fff; width: 48%; float: left; }
+        .btn-sell { background-color: #f44336; color: #fff; width: 48%; float: right; }
+        .clear { clear: both; }
+        .status { margin-top: 15px; padding: 12px; border-radius: 4px; background: #2b2b30; word-break: break-word; font-size: 13px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #333; font-size: 14px; }
+        th { color: #f7a600; }
     </style>
 </head>
 <body>
-<div class="card">
-    <h2>Bybit Terminal (MAINNET)</h2>
-    <input type="password" id="password" placeholder="Geslo aplikacije">
-    <button id="connectBtn">Poveži Bybit</button>
-    <div class="status" id="statusBox">Okolje: <b>MAINNET (Pravi Bybit)</b></div>
+<div class="container">
+
+    <div class="card">
+        <h2>Bybit Terminal (MAINNET)</h2>
+        <label>Geslo aplikacije:</label>
+        <input type="password" id="password" placeholder="Geslo aplikacije" autocomplete="current-password">
+        <button class="btn-connect" id="connectBtn">Poveži in osveži stanje</button>
+        <div class="status" id="statusBox">Status: <b>Čakam na povezavo...</b></div>
+    </div>
+
+    <div class="card">
+        <h3>Vaša sredstva na Bybitu</h3>
+        <table>
+            <thead><tr><th>Valuta</th><th>Skupno</th><th>Na voljo</th></tr></thead>
+            <tbody id="balanceTable">
+                <tr><td colspan="3" style="text-align:center; color:#777;">Ni podatkov. Vnesite geslo zgoraj.</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h3>Hitro trgovanje (Market Order)</h3>
+
+        <label>Trg:</label>
+        <select id="tradeCategory">
+            <option value="spot">Spot</option>
+            <option value="linear">Terminske pogodbe (USDT perpetual)</option>
+        </select>
+
+        <label>Trgovalni par (Symbol):</label>
+        <input type="text" id="tradeSymbol" value="BTCUSDT" placeholder="npr. BTCUSDT">
+
+        <label>Količina (v osnovnem kovancu, npr. 0.001 za BTC):</label>
+        <input type="number" step="any" id="tradeQty" placeholder="Količina">
+
+        <div style="margin-top: 15px;">
+            <button class="btn-buy" id="buyBtn">KUPI (BUY)</button>
+            <button class="btn-sell" id="sellBtn">PRODAJ (SELL)</button>
+            <div class="clear"></div>
+        </div>
+
+        <div class="status" id="orderStatusBox">Naročilo: <b>Pripravljeno</b></div>
+    </div>
 </div>
 
 <script>
     const esc = s => { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; };
+    const $ = id => document.getElementById(id);
 
-    async function connectBybit() {
-        const password = document.getElementById('password').value;
-        const box = document.getElementById('statusBox');
+    async function post(url, payload) {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const text = await res.text();
+        try { return JSON.parse(text); }
+        catch { throw new Error(`Odgovor ni JSON (HTTP ${res.status})`); }
+    }
+
+    async function connectAndFetch() {
+        const password = $('password').value;
+        const box = $('statusBox');
+        const table = $('balanceTable');
         if (!password) return alert('Vnesite geslo!');
 
         box.style.color = '#fff';
-        box.textContent = 'Povezovanje z Bybitom...';
+        box.textContent = 'Pridobivam stanje iz Bybita...';
+        $('connectBtn').disabled = true;
 
         try {
-            const res = await fetch('/api/balance', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ password })
-            });
-            const text = await res.text();
-            let d;
-            try { d = JSON.parse(text); } catch { throw new Error(`Odgovor ni JSON (HTTP ${res.status})`); }
-
+            const d = await post('/api/balance', { password });
             if (d.status === 'success') {
-                const eq = d.data?.list?.[0]?.totalEquity;
+                const acc = d.data?.list?.[0];
+                const eq = acc?.totalEquity ? parseFloat(acc.totalEquity).toFixed(2) : 'n/a';
                 box.style.color = '#4CAF50';
-                box.innerHTML = `<b>Povezano uspešno!</b><br>Total Equity: ${esc(eq ? parseFloat(eq).toFixed(2) : 'n/a')} USD`;
+                box.innerHTML = `<b>Povezano uspešno!</b> Total Equity: ${esc(eq)} USD`;
+
+                const coins = (acc?.coin || []).filter(c => parseFloat(c.walletBalance) > 0);
+                if (coins.length) {
+                    table.innerHTML = coins.map(c => {
+                        const total = parseFloat(c.walletBalance);
+                        const free = Math.max(0, total - parseFloat(c.locked || 0));
+                        return `<tr><td><b>${esc(c.coin)}</b></td><td>${total.toFixed(6)}</td><td>${free.toFixed(6)}</td></tr>`;
+                    }).join('');
+                } else {
+                    table.innerHTML = '<tr><td colspan="3" style="text-align:center;">Na računu ni sredstev (stanja so 0).</td></tr>';
+                }
             } else {
                 box.style.color = '#f44336';
                 box.innerHTML = `<b>Napaka (${esc(d.code ?? 'N/A')}):</b> ${esc(d.message)}`;
@@ -53,9 +121,51 @@
         } catch (err) {
             box.style.color = '#f44336';
             box.innerHTML = `<b>Napaka:</b> ${esc(err.message)}`;
+        } finally {
+            $('connectBtn').disabled = false;
         }
     }
-    document.getElementById('connectBtn').addEventListener('click', connectBybit);
+
+    async function executeOrder(side) {
+        const password = $('password').value;
+        const category = $('tradeCategory').value;
+        const symbol = $('tradeSymbol').value.trim().toUpperCase();
+        const qty = $('tradeQty').value.trim();
+        const box = $('orderStatusBox');
+
+        if (!password) return alert('Najprej vnesite geslo!');
+        if (!symbol || !qty || parseFloat(qty) <= 0) return alert('Vnesite veljaven par in količino!');
+
+        const label = side === 'Buy' ? 'KUPI' : 'PRODAJ';
+        if (!confirm(`${label} ${qty} ${symbol} (${category}) po tržni ceni?\n\nTo je pravi denar na pravem računu.`)) return;
+
+        box.style.color = '#fff';
+        box.textContent = `Pošiljam ${side} naročilo za ${qty} ${symbol}...`;
+        $('buyBtn').disabled = true;
+        $('sellBtn').disabled = true;
+
+        try {
+            const d = await post('/api/order', { password, category, symbol, side, qty });
+            if (d.status === 'success') {
+                box.style.color = '#4CAF50';
+                box.innerHTML = `<b>Naročilo oddano!</b> (${esc(side)} ${esc(qty)} ${esc(symbol)})<br>ID: ${esc(d.data?.orderId || 'n/a')}`;
+                setTimeout(connectAndFetch, 1500);
+            } else {
+                box.style.color = '#f44336';
+                box.innerHTML = `<b>Napaka pri naročilu (${esc(d.code ?? 'N/A')}):</b> ${esc(d.message)}`;
+            }
+        } catch (err) {
+            box.style.color = '#f44336';
+            box.innerHTML = `<b>Napaka:</b> ${esc(err.message)}`;
+        } finally {
+            $('buyBtn').disabled = false;
+            $('sellBtn').disabled = false;
+        }
+    }
+
+    $('connectBtn').addEventListener('click', connectAndFetch);
+    $('buyBtn').addEventListener('click', () => executeOrder('Buy'));
+    $('sellBtn').addEventListener('click', () => executeOrder('Sell'));
 </script>
 </body>
 </html>
