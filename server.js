@@ -58,4 +58,16 @@ app.post('/api/balance', async (req, res) => {
         const data = response.data;
         if (!data || typeof data !== 'object') {
             return res.json({ status: 'error', code: response.status,
-                message: `Bybit ni vrnil JSON (HTTP ${response.status}). Verjetno blokada regije/IP strežnika.`
+                message: `Bybit ni vrnil JSON (HTTP ${response.status}). Verjetno blokada regije/IP strežnika.` });
+        }
+        if (data.retCode === 0) {
+            return res.json({ status: 'success', code: 0, message: 'Povezano uspešno!', data: data.result });
+        }
+        return res.json({ status: 'error', code: data.retCode ?? -1, message: data.retMsg || 'Neznana napaka pri Bybitu' });
+    } catch (err) {
+        return res.json({ status: 'error', code: -500, message: `Napaka strežnika: ${err.message}` });
+    }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Strežnik teče na portu ${PORT}`));
