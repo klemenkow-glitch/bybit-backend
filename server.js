@@ -7,7 +7,7 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-const BYBIT_URL = 'https://api.bybit.com'; // MAINNET
+const BYBIT_URL = (process.env.BYBIT_BASE_URL || 'https://api.bybit.com').trim();
 const BYBIT_API_KEY = (process.env.BYBIT_API_KEY || '').trim();
 const BYBIT_API_SECRET = (process.env.BYBIT_API_SECRET || '').trim();
 const APP_PASSWORD = (process.env.APP_PASSWORD || '').trim();
