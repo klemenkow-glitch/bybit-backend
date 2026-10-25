@@ -14,6 +14,9 @@ const API_SECRET = (process.env.BYBIT_API_SECRET || '').trim();
 const APP_PASSWORD = (process.env.APP_PASSWORD || '').trim();
 const RECV_WINDOW = '10000';
 
+const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+const wait = ms => new Promise(r => setTimeout(r, ms));
+
 function snippet(body) {
     try {
         const s = typeof body === 'string' ? body : JSON.stringify(body);
@@ -51,6 +54,14 @@ function checkAuth(req, res) {
     return true;
 }
 
+function keysMissing(res) {
+    if (!API_KEY || !API_SECRET) {
+        res.json({ status: 'error', code: -400, message: 'Na strežniku manjkata BYBIT_API_KEY / BYBIT_API_SECRET.' });
+        return true;
+    }
+    return false;
+}
+
 // ---- Podpisan klic na Bybit ----
 async function bybit(method, apiPath, { query = '', body = null } = {}) {
     const timestamp = Date.now().toString();
@@ -83,14 +94,6 @@ async function bybit(method, apiPath, { query = '', body = null } = {}) {
     return { ok: false, code: data.retCode ?? -1, message: data.retMsg || 'Neznana napaka pri Bybitu' };
 }
 
-function keysMissing(res) {
-    if (!API_KEY || !API_SECRET) {
-        res.json({ status: 'error', code: -400, message: 'Na strežniku manjkata BYBIT_API_KEY / BYBIT_API_SECRET.' });
-        return true;
-    }
-    return false;
-}
-
 app.get('/api/health', (req, res) => {
     res.json({
         passwordSet: APP_PASSWORD.length > 0,
@@ -100,29 +103,88 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// ---- Stanje sredstev ----
+// ---- Nalaganje stanj iz posameznih računov ----
+async function loadWallet(accountType) {
+    const r = await bybit('GET', '/v5/account/wallet-balance', { query: `accountType=${accountType}` });
+    if (!r.ok) return { accountType, ok: false, message: `${r.message} (${r.code})` };
+    const acc = r.result?.list?.[0];
+    const coins = (acc?.coin || []).map(c => {
+        const total = num(c.walletBalance);
+        return { coin: c.coin, account: accountType, total, free: Math.max(0, total - num(c.locked)) };
+    });
+    return { accountType, ok: true, totalEquity: num(acc?.totalEquity), coins };
+}
+
+async function loadFunding() {
+    const r = await bybit('GET', '/v5/asset/transfer/query-account-coins-balance', { query: 'accountType=FUND' });
+    if (!r.ok) return { accountType: 'FUND', ok: false, message: `${r.message} (${r.code})` };
+    const coins = (r.result?.balance || []).map(c => {
+        const total = num(c.walletBalance);
+        const hasTransfer = c.transferBalance !== undefined && c.transferBalance !== '';
+        return { coin: c.coin, account: 'FUND', total, free: hasTransfer ? num(c.transferBalance) : total };
+    });
+    return { accountType: 'FUND', ok: true, coins };
+}
+
+async function safe(accountType, fn) {
+    try { return await fn(); }
+    catch (e) { return { accountType, ok: false, message: e.message }; }
+}
+
+// ---- Stanje sredstev (UNIFIED + SPOT + FUND) ----
 app.post('/api/balance', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         if (keysMissing(res)) return;
-        const r = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
-        if (!r.ok) return res.json({ status: 'error', code: r.code, message: r.message });
-        return res.json({ status: 'success', code: 0, message: 'Povezano uspešno!', data: r.result });
+
+        const [uni, spot, fund] = await Promise.all([
+            safe('UNIFIED', () => loadWallet('UNIFIED')),
+            safe('SPOT', () => loadWallet('SPOT')),
+            safe('FUND', () => loadFunding())
+        ]);
+
+        // Če Unified obstaja, klasičnega Spot računa ne upoštevamo (da se stanja ne podvojijo)
+        const sources = uni.ok ? [uni, fund] : [uni, spot, fund];
+
+        if (!sources.some(a => a.ok)) {
+            return res.json({
+                status: 'error', code: -1,
+                message: sources.map(a => `${a.accountType}: ${a.message}`).join(' | ')
+            });
+        }
+
+        const warnings = sources.filter(a => !a.ok).map(a => `${a.accountType}: ${a.message}`);
+        const coins = sources
+            .filter(a => a.ok)
+            .flatMap(a => a.coins)
+            .filter(c => c.total > 0)
+            .sort((a, b) => a.account.localeCompare(b.account) || a.coin.localeCompare(b.coin));
+
+        return res.json({
+            status: 'success',
+            code: 0,
+            message: 'Povezano uspešno!',
+            data: {
+                totalEquity: uni.ok ? uni.totalEquity : null,
+                coins,
+                warnings
+            }
+        });
     } catch (err) {
         return res.json({ status: 'error', code: -500, message: `Napaka strežnika: ${err.message}` });
     }
 });
 
-// ---- Market naročilo ----
+// ---- Market naročilo (Spot) ----
 app.post('/api/order', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         if (keysMissing(res)) return;
 
-        const symbol = String(req.body?.symbol || '').trim().toUpperCase();
+        const symbol = String(req.body?.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
         const side = String(req.body?.side || '');
-        const qty = String(req.body?.qty || '').trim();
-        const category = String(req.body?.category || 'spot');
+        const qty = String(req.body?.qty || '').trim().replace(',', '.');
+        const marketUnit = String(req.body?.marketUnit || 'baseCoin');
 
         if (!/^[A-Z0-9]{5,20}$/.test(symbol)) {
             return res.json({ status: 'error', code: -422, message: 'Neveljaven trgovalni par.' });
@@ -130,20 +192,83 @@ app.post('/api/order', async (req, res) => {
         if (side !== 'Buy' && side !== 'Sell') {
             return res.json({ status: 'error', code: -422, message: 'Neveljavna stran (Buy/Sell).' });
         }
-        if (!/^\d+(\.\d+)?$/.test(qty) || parseFloat(qty) <= 0) {
+        if (!/^\d+(\.\d{1,12})?$/.test(qty) || parseFloat(qty) <= 0) {
             return res.json({ status: 'error', code: -422, message: 'Neveljavna količina.' });
         }
-        if (category !== 'spot' && category !== 'linear') {
-            return res.json({ status: 'error', code: -422, message: 'Neveljavna kategorija.' });
+        if (marketUnit !== 'baseCoin' && marketUnit !== 'quoteCoin') {
+            return res.json({ status: 'error', code: -422, message: 'Neveljavna enota količine.' });
         }
 
-        const order = { category, symbol, side, orderType: 'Market', qty };
-        if (category === 'spot') order.marketUnit = 'baseCoin'; // količina v osnovnem kovancu (npr. BTC)
-        order.orderLinkId = `term-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+        const order = {
+            category: 'spot',
+            symbol,
+            side,
+            orderType: 'Market',
+            qty,
+            marketUnit,
+            orderLinkId: `term-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`
+        };
 
         const r = await bybit('POST', '/v5/order/create', { body: order });
         if (!r.ok) return res.json({ status: 'error', code: r.code, message: r.message });
-        return res.json({ status: 'success', code: 0, message: 'Naročilo oddano.', data: r.result });
+
+        // Najboljši poskus: preberi stanje izvedbe naročila
+        let fill = null;
+        try {
+            await wait(800);
+            const q = await bybit('GET', '/v5/order/history', {
+                query: `category=spot&orderId=${encodeURIComponent(r.result?.orderId || '')}`
+            });
+            const o = q.ok ? q.result?.list?.[0] : null;
+            if (o) {
+                fill = {
+                    status: o.orderStatus,
+                    avgPrice: o.avgPrice,
+                    execQty: o.cumExecQty,
+                    execValue: o.cumExecValue,
+                    fee: o.cumExecFee
+                };
+            }
+        } catch { /* ni kritično */ }
+
+        return res.json({ status: 'success', code: 0, message: 'Naročilo oddano.', data: r.result, fill });
+    } catch (err) {
+        return res.json({ status: 'error', code: -500, message: `Napaka strežnika: ${err.message}` });
+    }
+});
+
+// ---- Prenos med lastnimi računi (FUND <-> UNIFIED) ----
+app.post('/api/transfer', async (req, res) => {
+    try {
+        if (!checkAuth(req, res)) return;
+        if (keysMissing(res)) return;
+
+        const coin = String(req.body?.coin || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        const amount = String(req.body?.amount || '').trim().replace(',', '.');
+        const from = String(req.body?.from || '');
+        const to = String(req.body?.to || '');
+        const allowed = ['FUND', 'UNIFIED'];
+
+        if (!/^[A-Z0-9]{2,12}$/.test(coin)) {
+            return res.json({ status: 'error', code: -422, message: 'Neveljaven kovanec.' });
+        }
+        if (!/^\d+(\.\d{1,12})?$/.test(amount) || parseFloat(amount) <= 0) {
+            return res.json({ status: 'error', code: -422, message: 'Neveljaven znesek.' });
+        }
+        if (!allowed.includes(from) || !allowed.includes(to) || from === to) {
+            return res.json({ status: 'error', code: -422, message: 'Neveljava smer prenosa.' });
+        }
+
+        const body = {
+            transferId: crypto.randomUUID(),
+            coin,
+            amount,
+            fromAccountType: from,
+            toAccountType: to
+        };
+        const r = await bybit('POST', '/v5/asset/transfer/inter-transfer', { body });
+        if (!r.ok) return res.json({ status: 'error', code: r.code, message: r.message });
+        return res.json({ status: 'success', code: 0, message: 'Prenos izveden.', data: r.result });
     } catch (err) {
         return res.json({ status: 'error', code: -500, message: `Napaka strežnika: ${err.message}` });
     }
