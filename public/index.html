@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="sl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bybit Trading Terminal</title>
+    <style>
+        body { font-family: Arial, sans-serif; background:#121214; color:#fff; padding:20px; }
+        .card { background:#1e1e22; padding:20px; border-radius:8px; max-width:500px; margin:auto; }
+        input, button { width:100%; padding:12px; margin:8px 0; border-radius:4px; border:none; box-sizing:border-box; font-size:16px; }
+        input { background:#2b2b30; color:#fff; }
+        button { background:#f7a600; color:#000; font-weight:bold; cursor:pointer; }
+        .status { margin-top:15px; padding:12px; border-radius:4px; background:#2b2b30; word-break:break-all; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <h2>Bybit Terminal (MAINNET)</h2>
+    <input type="password" id="password" placeholder="Geslo aplikacije">
+    <button id="connectBtn">Poveži Bybit</button>
+    <div class="status" id="statusBox">Okolje: <b>MAINNET (Pravi Bybit)</b></div>
+</div>
+
+<script>
+    const esc = s => { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; };
+
+    async function connectBybit() {
+        const password = document.getElementById('password').value;
+        const box = document.getElementById('statusBox');
+        if (!password) return alert('Vnesite geslo!');
+
+        box.style.color = '#fff';
+        box.textContent = 'Povezovanje z Bybitom...';
+
+        try {
+            const res = await fetch('/api/balance', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password })
+            });
+            const text = await res.text();
+            let d;
+            try { d = JSON.parse(text); } catch { throw new Error(`Odgovor ni JSON (HTTP ${res.status})`); }
+
+            if (d.status === 'success') {
+                const eq = d.data?.list?.[0]?.totalEquity;
+                box.style.color = '#4CAF50';
+                box.innerHTML = `<b>Povezano uspešno!</b><br>Total Equity: ${esc(eq ? parseFloat(eq).toFixed(2) : 'n/a')} USD`;
+            } else {
+                box.style.color = '#f44336';
+                box.innerHTML = `<b>Napaka (${esc(d.code ?? 'N/A')}):</b> ${esc(d.message)}`;
+            }
+        } catch (err) {
+            box.style.color = '#f44336';
+            box.innerHTML = `<b>Napaka:</b> ${esc(err.message)}`;
+        }
+    }
+    document.getElementById('connectBtn').addEventListener('click', connectBybit);
+</script>
+</body>
+</html>
