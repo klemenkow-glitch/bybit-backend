@@ -20,6 +20,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 const fmt8 = n => n.toFixed(8).replace(/\.?0+$/, '');
 const cleanSymbol = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 const validSymbol = s => /^[A-Z0-9]{5,20}$/.test(s);
+const MAX_ORDER_AMOUNT = num(process.env.MAX_ORDER_AMOUNT); // 0 = brez omejitve
 
 const ok = (res, data, message = 'OK') => res.json({ status: 'success', code: 0, message, data });
 const fail = (res, code, message, data = null) => res.json({ status: 'error', code, message, data });
@@ -31,6 +32,16 @@ function snippet(body) {
     } catch {
         return '(ni berljivo)';
     }
+}
+
+// Zaokroži navzdol na korak (npr. "0.000001") in vrne niz
+function floorToStep(value, step) {
+    const st = num(step);
+    if (!st) return String(value);
+    let d = 0;
+    while (d < 12 && Math.abs(st * 10 ** d - Math.round(st * 10 ** d)) > 1e-9) d++;
+    const n = Math.floor(value / st + 1e-9) * st;
+    return n.toFixed(d);
 }
 
 // ---------- Zaščita gesla: zaklep po 5 napačnih poskusih za 15 minut ----------
@@ -139,47 +150,23 @@ async function safe(accountType, fn) {
     catch (e) { return { accountType, ok: false, message: e.message }; }
 }
 
+let uniCache = { ts: 0, val: null };
+async function getUnifiedCached(maxAge = 5000) {
+    if (uniCache.val && Date.now() - uniCache.ts < maxAge) return uniCache.val;
+    const v = await safe('UNIFIED', () => loadWallet('UNIFIED'));
+    if (v.ok) uniCache = { ts: Date.now(), val: v };
+    return v;
+}
+
 // ---------- Prenos Funding <-> Unified ----------
 async function doTransfer(coin, amount, from, to) {
-    const body = {
-        transferId: crypto.randomUUID(),
-        coin,
-        amount,
-        fromAccountType: from,
-        toAccountType: to
-    };
-    return bybit('POST', '/v5/asset/transfer/inter-transfer', { body });
+    return bybit('POST', '/v5/asset/transfer/inter-transfer', {
+        body: { transferId: crypto.randomUUID(), coin, amount, fromAccountType: from, toAccountType: to }
+    });
 }
 
-// ---------- Samodejni prenos pred naročilom (samo Spot) ----------
-const QUOTES = ['USDT', 'USDC', 'USD', 'EUR', 'BTC', 'ETH'];
-function splitSymbol(symbol) {
-    for (const q of QUOTES) {
-        if (symbol.length > q.length && symbol.endsWith(q)) {
-            return { base: symbol.slice(0, -q.length), quote: q };
-        }
-    }
-    return null;
-}
-
-async function ensureFunds({ symbol, side, qty, marketUnit }) {
-    const sp = splitSymbol(symbol);
-    if (!sp) return { transferred: false, note: 'Kovanca ni mogoče določiti iz para, samodejni prenos preskočen.' };
-
-    const tk = await publicGet('/v5/market/tickers', `category=spot&symbol=${symbol}`);
-    const price = num(tk.ok ? tk.result?.list?.[0]?.lastPrice : 0);
-    if (!price) return { transferred: false, note: 'Cene ni bilo mogoče pridobiti, samodejni prenos preskočen.' };
-
-    const q = parseFloat(qty);
-    let coin, need;
-    if (side === 'Buy') {
-        coin = sp.quote;
-        need = marketUnit === 'quoteCoin' ? q : q * price * 1.02;
-    } else {
-        coin = sp.base;
-        need = marketUnit === 'baseCoin' ? q : (q / price) * 1.02;
-    }
-
+// Pred nakupom prenese iz Funding samo toliko, kolikor manjka na Unified
+async function ensureQuote(coin, need) {
     const [uni, fund] = await Promise.all([
         safe('UNIFIED', () => loadWallet('UNIFIED')),
         safe('FUND', loadFunding)
@@ -193,51 +180,164 @@ async function ensureFunds({ symbol, side, qty, marketUnit }) {
     if (!fund.ok) return { error: `Na Unified je premalo ${coin}, stanja Funding pa ni mogoče prebrati: ${fund.message}` };
     const fundFree = fund.coins.filter(c => c.coin === coin).reduce((s, c) => s + c.free, 0);
     if (fundFree + 1e-12 < shortfall) {
-        return { error: `Premalo ${coin}: potrebujete ok. ${fmt8(need)}, na Unified ${fmt8(uniFree)}, na Funding ${fmt8(fundFree)}.` };
+        return { error: `Premalo ${coin}: potrebujete ${fmt8(need)}, na Unified ${fmt8(uniFree)}, na Funding ${fmt8(fundFree)}.` };
     }
-
     const amount = fmt8(Math.min(Math.ceil(shortfall * 1e8) / 1e8, fundFree));
     const t = await doTransfer(coin, amount, 'FUND', 'UNIFIED');
     if (!t.ok) return { error: `Samodejni prenos ni uspel: ${t.message} (${t.code})` };
     await wait(600);
+    uniCache = { ts: 0, val: null };
     return { transferred: true, coin, amount };
 }
 
-// ---------- Monitor ene postavke ----------
-async function monitorOne(category, symbol) {
+// ---------- Podatki o paru (zaokroževanje, minimumi) ----------
+const instCache = new Map();
+async function getInstrument(symbol) {
+    const c = instCache.get(symbol);
+    if (c && Date.now() - c.ts < 10 * 60 * 1000) return c.val;
+    const r = await publicGet('/v5/market/instruments-info', `category=spot&symbol=${symbol}`);
+    const it = r.ok ? r.result?.list?.[0] : null;
+    if (!it) return null;
+    const val = {
+        symbol,
+        base: it.baseCoin,
+        quote: it.quoteCoin,
+        status: it.status,
+        basePrecision: it.lotSizeFilter?.basePrecision,
+        quotePrecision: it.lotSizeFilter?.quotePrecision,
+        minOrderQty: it.lotSizeFilter?.minOrderQty,
+        minOrderAmt: it.lotSizeFilter?.minOrderAmt
+    };
+    instCache.set(symbol, { ts: Date.now(), val });
+    return val;
+}
+
+// ---------- Svečke in kazalniki ----------
+const klineCache = new Map();
+async function getCandles(symbol, interval) {
+    const key = `${symbol}:${interval}`;
+    const c = klineCache.get(key);
+    if (c && Date.now() - c.ts < 15000) return c.val;
+    const r = await publicGet('/v5/market/kline', `category=spot&symbol=${symbol}&interval=${interval}&limit=200`);
+    if (!r.ok) return { ok: false, message: `${r.message} (${r.code})` };
+    const candles = (r.result?.list || []).slice().reverse().map(k => ({
+        h: num(k[2]), l: num(k[3]), c: num(k[4])
+    }));
+    const val = { ok: true, candles };
+    klineCache.set(key, { ts: Date.now(), val });
+    return val;
+}
+
+function emaSeries(values, p) {
+    const k = 2 / (p + 1);
+    const out = [values[0]];
+    for (let i = 1; i < values.length; i++) out.push(values[i] * k + out[i - 1] * (1 - k));
+    return out;
+}
+
+function rsiLast(closes, p = 14) {
+    if (closes.length <= p) return null;
+    let g = 0, l = 0;
+    for (let i = 1; i <= p; i++) {
+        const d = closes[i] - closes[i - 1];
+        if (d >= 0) g += d; else l -= d;
+    }
+    let ag = g / p, al = l / p;
+    for (let i = p + 1; i < closes.length; i++) {
+        const d = closes[i] - closes[i - 1];
+        ag = (ag * (p - 1) + Math.max(d, 0)) / p;
+        al = (al * (p - 1) + Math.max(-d, 0)) / p;
+    }
+    if (al === 0) return 100;
+    return 100 - 100 / (1 + ag / al);
+}
+
+function atrLast(c, p = 14) {
+    const trs = [];
+    for (let i = 1; i < c.length; i++) {
+        trs.push(Math.max(c[i].h - c[i].l, Math.abs(c[i].h - c[i - 1].c), Math.abs(c[i].l - c[i - 1].c)));
+    }
+    const last = trs.slice(-p);
+    return last.reduce((s, x) => s + x, 0) / (last.length || 1);
+}
+
+// Točkovanje: od -5 (močno PRODAJ) do +5 (močno KUPI)
+function analyze(candles) {
+    const n = candles.length;
+    if (n < 60) return null;
+    const closes = candles.map(c => c.c);
+    const last = closes[n - 1];
+
+    const e9 = emaSeries(closes, 9), e21 = emaSeries(closes, 21), e50 = emaSeries(closes, 50);
+    const e12 = emaSeries(closes, 12), e26 = emaSeries(closes, 26);
+    const macdLine = e12.map((v, i) => v - e26[i]);
+    const macdSig = emaSeries(macdLine, 9);
+    const hist = macdLine[n - 1] - macdSig[n - 1];
+    const rsi = rsiLast(closes, 14);
+    const mom = (last / closes[n - 11] - 1) * 100;
+    const atr = atrLast(candles, 14);
+
+    let score = 0;
+    const reasons = [];
+
+    if (e9[n - 1] > e21[n - 1]) { score += 1; reasons.push('EMA9 nad EMA21: kratkoročni trend navzgor'); }
+    else { score -= 1; reasons.push('EMA9 pod EMA21: kratkoročni trend navzdol'); }
+
+    if (last > e50[n - 1]) { score += 1; reasons.push('Cena nad EMA50: širši trend navzgor'); }
+    else { score -= 1; reasons.push('Cena pod EMA50: širši trend navzdol'); }
+
+    if (hist > 0) { score += 1; reasons.push('MACD pozitiven: zagon navzgor'); }
+    else { score -= 1; reasons.push('MACD negativen: zagon navzdol'); }
+
+    if (rsi !== null) {
+        if (rsi < 30) { score += 1; reasons.push(`RSI ${rsi.toFixed(0)}: preprodano`); }
+        else if (rsi > 70) { score -= 1; reasons.push(`RSI ${rsi.toFixed(0)}: prekupljeno`); }
+        else reasons.push(`RSI ${rsi.toFixed(0)}: nevtralno`);
+    }
+
+    if (mom > 0.4) { score += 1; reasons.push(`Zadnjih 10 svečk: +${mom.toFixed(2)}%`); }
+    else if (mom < -0.4) { score -= 1; reasons.push(`Zadnjih 10 svečk: ${mom.toFixed(2)}%`); }
+    else reasons.push(`Zadnjih 10 svečk: ${mom.toFixed(2)}% (ravno)`);
+
+    const signal = score >= 3 ? 'BUY' : score <= -3 ? 'SELL' : 'HOLD';
+    const decimals = last >= 100 ? 2 : last >= 1 ? 4 : 6;
+    return {
+        signal,
+        score,
+        confidence: Math.round(Math.abs(score) / 5 * 100),
+        rsi: rsi === null ? null : Math.round(rsi),
+        reasons,
+        stop: signal === 'BUY' ? (last - 1.5 * atr).toFixed(decimals) : null,
+        target: signal === 'BUY' ? (last + 2 * atr).toFixed(decimals) : null
+    };
+}
+
+async function analyzeSymbol(symbol, interval, uni) {
     const item = { symbol, ok: false };
     try {
-        const [t, o, p] = await Promise.all([
-            publicGet('/v5/market/tickers', `category=${category}&symbol=${symbol}`),
-            bybit('GET', '/v5/order/realtime', { query: `category=${category}&symbol=${symbol}` }),
-            category === 'linear'
-                ? bybit('GET', '/v5/position/list', { query: `category=linear&symbol=${symbol}` })
-                : Promise.resolve(null)
+        const [inst, t, c] = await Promise.all([
+            getInstrument(symbol),
+            publicGet('/v5/market/tickers', `category=spot&symbol=${symbol}`),
+            getCandles(symbol, interval)
         ]);
+        if (!inst) { item.message = 'Par ni najden na Bybit Spot.'; return item; }
         const tk = t.ok ? t.result?.list?.[0] : null;
-        if (!tk) {
-            item.message = t.ok ? 'Par ni najden na tem trgu.' : `${t.message} (${t.code})`;
-            return item;
-        }
+        if (!tk) { item.message = t.ok ? 'Par nima cene.' : `${t.message} (${t.code})`; return item; }
+
         item.ok = true;
+        item.base = inst.base;
+        item.quote = inst.quote;
         item.lastPrice = tk.lastPrice;
         item.bid = tk.bid1Price;
         item.ask = tk.ask1Price;
         item.change24h = num(tk.price24hPcnt) * 100;
-        item.openOrders = o.ok ? (o.result?.list || []).length : null;
-        if (category === 'linear' && p && p.ok) {
-            const pos = (p.result?.list || []).find(x => num(x.size) > 0);
-            if (pos) {
-                item.position = {
-                    side: pos.side,
-                    size: pos.size,
-                    avgPrice: pos.avgPrice,
-                    markPrice: pos.markPrice,
-                    unrealisedPnl: pos.unrealisedPnl,
-                    leverage: pos.leverage
-                };
-            }
-        }
+        item.held = uni && uni.ok
+            ? uni.coins.filter(x => x.coin === inst.base).reduce((s, x) => s + x.free, 0)
+            : null;
+
+        const a = c.ok ? analyze(c.candles) : null;
+        if (a) Object.assign(item, a);
+        else { item.signal = 'N/A'; item.reasons = [c.ok ? 'Premalo podatkov za analizo.' : `Svečk ni mogoče pridobiti: ${c.message}`]; }
         return item;
     } catch (e) {
         item.message = e.message;
@@ -251,11 +351,11 @@ app.get('/api/health', (req, res) => {
         passwordSet: APP_PASSWORD.length > 0,
         keySet: API_KEY.length > 0,
         secretSet: API_SECRET.length > 0,
-        baseUrl: BYBIT_URL
+        baseUrl: BYBIT_URL,
+        maxOrderAmount: MAX_ORDER_AMOUNT || null
     });
 });
 
-// Stanje: UNIFIED + SPOT (če Unified ne obstaja) + FUNDING
 app.post('/api/balance', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -284,7 +384,6 @@ app.post('/api/balance', async (req, res) => {
     }
 });
 
-// Prenos Funding <-> Unified
 app.post('/api/transfer', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -302,48 +401,89 @@ app.post('/api/transfer', async (req, res) => {
 
         const r = await doTransfer(coin, amount, from, to);
         if (!r.ok) return fail(res, r.code, r.message);
+        uniCache = { ts: 0, val: null };
         return ok(res, r.result, 'Prenos izveden.');
     } catch (err) {
         return fail(res, -500, `Napaka strežnika: ${err.message}`);
     }
 });
 
-// Market naročilo (Spot ali linear)
-app.post('/api/order', async (req, res) => {
+// AI analiza do 5 trgov
+app.post('/api/analyze', async (req, res) => {
+    try {
+        if (!checkAuth(req, res)) return;
+        if (keysMissing(res)) return;
+
+        const interval = ['5', '15', '60'].includes(String(req.body?.interval)) ? String(req.body.interval) : '15';
+        const raw = Array.isArray(req.body?.symbols) ? req.body.symbols : [];
+        const symbols = [...new Set(raw.map(cleanSymbol).filter(validSymbol))].slice(0, 5);
+        if (!symbols.length) return fail(res, -422, 'Vpišite vsaj en veljaven trg.');
+
+        const uni = await getUnifiedCached();
+        const items = await Promise.all(symbols.map(s => analyzeSymbol(s, interval, uni)));
+        return ok(res, { items, interval, ts: Date.now() });
+    } catch (err) {
+        return fail(res, -500, `Napaka strežnika: ${err.message}`);
+    }
+});
+
+// Enoklik trgovanje: znesek, količino in zaokroževanje izračuna strežnik
+app.post('/api/trade', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         if (keysMissing(res)) return;
 
         const symbol = cleanSymbol(req.body?.symbol);
         const side = String(req.body?.side || '');
-        const qty = String(req.body?.qty || '').trim().replace(',', '.');
-        const category = String(req.body?.category || 'spot');
-        const marketUnit = String(req.body?.marketUnit || 'baseCoin');
-        const autoTransfer = req.body?.autoTransfer === true;
+        const amount = String(req.body?.amount || '').trim().replace(',', '.');
+        const autoTransfer = req.body?.autoTransfer !== false;
 
         if (!validSymbol(symbol)) return fail(res, -422, 'Neveljaven trgovalni par.');
         if (side !== 'Buy' && side !== 'Sell') return fail(res, -422, 'Neveljavna stran (Buy/Sell).');
-        if (!/^\d+(\.\d{1,12})?$/.test(qty) || parseFloat(qty) <= 0) return fail(res, -422, 'Neveljavna količina.');
-        if (category !== 'spot' && category !== 'linear') return fail(res, -422, 'Neveljavna kategorija.');
-        if (marketUnit !== 'baseCoin' && marketUnit !== 'quoteCoin') return fail(res, -422, 'Neveljavna enota količine.');
-
-        let transferInfo = null;
-        if (autoTransfer && category === 'spot') {
-            transferInfo = await ensureFunds({ symbol, side, qty, marketUnit });
-            if (transferInfo.error) return fail(res, -430, transferInfo.error, { autoTransfer: transferInfo });
+        if (!/^\d+(\.\d{1,8})?$/.test(amount) || parseFloat(amount) <= 0) return fail(res, -422, 'Neveljaven znesek.');
+        const amt = parseFloat(amount);
+        if (MAX_ORDER_AMOUNT > 0 && amt > MAX_ORDER_AMOUNT) {
+            return fail(res, -424, `Znesek presega dovoljeno omejitev (${MAX_ORDER_AMOUNT}).`);
         }
 
-        const order = {
-            category,
-            symbol,
-            side,
-            orderType: 'Market',
-            qty,
-            orderLinkId: `term-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`
-        };
-        if (category === 'spot') order.marketUnit = marketUnit;
+        const inst = await getInstrument(symbol);
+        if (!inst) return fail(res, -404, 'Par ni najden na Bybit Spot.');
+        if (inst.status && inst.status !== 'Trading') return fail(res, -405, `Par trenutno ni na voljo za trgovanje (${inst.status}).`);
+
+        const tk = await publicGet('/v5/market/tickers', `category=spot&symbol=${symbol}`);
+        const price = num(tk.ok ? tk.result?.list?.[0]?.lastPrice : 0);
+        if (!price) return fail(res, -406, 'Cene pari ni bilo mogoče pridobiti.');
+
+        let order;
+        let transferInfo = null;
+
+        if (side === 'Buy') {
+            const amountQ = floorToStep(amt, inst.quotePrecision);
+            if (num(amountQ) <= 0 || (num(inst.minOrderAmt) && num(amountQ) < num(inst.minOrderAmt))) {
+                return fail(res, -423, `Znesek na trg je pod Bybitovim minimumom (${inst.minOrderAmt} ${inst.quote}). Povečajte začetni znesek ali izberite manj trgov.`);
+            }
+            if (autoTransfer) {
+                transferInfo = await ensureQuote(inst.quote, num(amountQ));
+                if (transferInfo.error) return fail(res, -430, transferInfo.error, { autoTransfer: transferInfo });
+            }
+            order = { category: 'spot', symbol, side, orderType: 'Market', qty: amountQ, marketUnit: 'quoteCoin' };
+        } else {
+            const uni = await safe('UNIFIED', () => loadWallet('UNIFIED'));
+            if (!uni.ok) return fail(res, -431, `Stanja Unified ni mogoče prebrati: ${uni.message}`);
+            const free = uni.coins.filter(c => c.coin === inst.base).reduce((s, c) => s + c.free, 0);
+            const qty = floorToStep(Math.min(free, amt / price), inst.basePrecision);
+            if (num(qty) <= 0 || (num(inst.minOrderQty) && num(qty) < num(inst.minOrderQty))) {
+                return fail(res, -432, `Nimate dovolj ${inst.base} na računu Unified za prodajo (na voljo ${fmt8(free)}, minimum ${inst.minOrderQty}).`);
+            }
+            if (num(inst.minOrderAmt) && num(qty) * price < num(inst.minOrderAmt)) {
+                return fail(res, -433, `Vrednost prodaje je pod Bybitovim minimumom (${inst.minOrderAmt} ${inst.quote}).`);
+            }
+            order = { category: 'spot', symbol, side, orderType: 'Market', qty, marketUnit: 'baseCoin' };
+        }
+        order.orderLinkId = `term-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
 
         const r = await bybit('POST', '/v5/order/create', { body: order });
+        uniCache = { ts: 0, val: null };
         if (!r.ok) {
             const extra = transferInfo?.transferred
                 ? ` (Samodejni prenos ${transferInfo.amount} ${transferInfo.coin} je bil že izveden.)`
@@ -351,44 +491,19 @@ app.post('/api/order', async (req, res) => {
             return fail(res, r.code, r.message + extra, { autoTransfer: transferInfo });
         }
 
-        // Najboljši poskus: preberi izvedbo naročila
         let fill = null;
         try {
             await wait(800);
             const q = await bybit('GET', '/v5/order/history', {
-                query: `category=${category}&orderId=${encodeURIComponent(r.result?.orderId || '')}`
+                query: `category=spot&orderId=${encodeURIComponent(r.result?.orderId || '')}`
             });
             const o = q.ok ? q.result?.list?.[0] : null;
             if (o) {
-                fill = {
-                    status: o.orderStatus,
-                    avgPrice: o.avgPrice,
-                    execQty: o.cumExecQty,
-                    execValue: o.cumExecValue,
-                    fee: o.cumExecFee
-                };
+                fill = { status: o.orderStatus, avgPrice: o.avgPrice, execQty: o.cumExecQty, execValue: o.cumExecValue, fee: o.cumExecFee };
             }
         } catch { /* ni kritično */ }
 
-        return ok(res, { ...r.result, fill, autoTransfer: transferInfo }, 'Naročilo oddano.');
-    } catch (err) {
-        return fail(res, -500, `Napaka strežnika: ${err.message}`);
-    }
-});
-
-// AI Trade Monitor: do 5 parov
-app.post('/api/monitor', async (req, res) => {
-    try {
-        if (!checkAuth(req, res)) return;
-        if (keysMissing(res)) return;
-
-        const category = req.body?.category === 'linear' ? 'linear' : 'spot';
-        const raw = Array.isArray(req.body?.symbols) ? req.body.symbols : [];
-        const symbols = [...new Set(raw.map(cleanSymbol).filter(validSymbol))].slice(0, 5);
-        if (!symbols.length) return fail(res, -422, 'Vpišite vsaj en veljaven par.');
-
-        const items = await Promise.all(symbols.map(s => monitorOne(category, s)));
-        return ok(res, { category, items, ts: Date.now() });
+        return ok(res, { ...r.result, side, symbol, qty: order.qty, unit: side === 'Buy' ? inst.quote : inst.base, fill, autoTransfer: transferInfo }, 'Naročilo oddano.');
     } catch (err) {
         return fail(res, -500, `Napaka strežnika: ${err.message}`);
     }
