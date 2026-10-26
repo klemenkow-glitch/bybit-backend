@@ -508,7 +508,21 @@ app.post('/api/trade', async (req, res) => {
         return fail(res, -500, `Napaka strežnika: ${err.message}`);
     }
 });
-
+app.get('/api/diag', async (req, res) => {
+    const out = { baseUrl: BYBIT_URL };
+    try {
+        const r = await axios.get('https://ipapi.co/json/', { timeout: 10000 });
+        out.serverIp = r.data.ip;
+        out.country = r.data.country_name;
+        out.city = r.data.city;
+    } catch (e) { out.ipError = e.message; }
+    try {
+        const r = await axios.get(`${BYBIT_URL}/v5/market/time`, { timeout: 15000, validateStatus: () => true });
+        out.bybitPublicStatus = r.status;
+        out.bybitPublicBody = snippet(r.data);
+    } catch (e) { out.bybitError = e.message; }
+    ok(res, out);
+});
 // Vedno JSON za neznane API poti in napake
 app.use('/api', (req, res) => {
     res.status(404).json({ status: 'error', code: 404, message: 'Neznana API pot.', data: null });
