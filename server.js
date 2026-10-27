@@ -197,14 +197,26 @@ app.post('/api/analyze', async (req, res) => {
             .sort((a, b) => parseFloat(b.turnover24h || 0) - parseFloat(a.turnover24h || 0))
             .slice(0, 5);
 
+        const [uni, fund] = await Promise.all([loadWallet('UNIFIED'), loadFunding()]);
+        const userCoins = [...(uni.coins || []), ...(fund.coins || [])];
+
         const items = await Promise.all(top5.map(async (t) => {
+            const inst = await getInstrument(t.symbol);
             const kline = await publicGet('/v5/market/kline', `category=spot&symbol=${t.symbol}&interval=1&limit=60`);
             const candles = kline.ok ? kline.result.list.slice().reverse().map(k => ({ c: num(k[4]) })) : [];
             const ai = analyze(candles);
+
+            // Preveri, ali že imamo kupljen ta kovanec
+            const heldCoin = userCoins.find(c => c.coin === inst.baseCoin);
+            const heldAmount = heldCoin ? heldCoin.free : 0;
+
             return {
                 symbol: t.symbol,
+                baseCoin: inst.baseCoin,
                 lastPrice: num(t.lastPrice),
                 change24h: (num(t.price24hPcnt) * 100).toFixed(2),
+                heldAmount: heldAmount,
+                isOwned: heldAmount > 0,
                 ...ai
             };
         }));
@@ -215,7 +227,7 @@ app.post('/api/analyze', async (req, res) => {
     }
 });
 
-// HITRO TRGOVANJE - BREZ DELITVE ZNESKA IN Z AVTOMATSKIM PREVERJANJEM KOVANCEV
+// TRGOVANJE: AVTOMATSKO SPREMENI VNESENI ZNESEK V IGRALNI PAR / PRODAJ VSE
 app.post('/api/trade', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -235,13 +247,16 @@ app.post('/api/trade', async (req, res) => {
 
         if (side === 'Buy') {
             const qtyQuote = floorToStep(amount, inst.quotePrecision);
-            await ensureCoin('USDT', num(qtyQuote), 'UNIFIED');
+            const hasUSDT = await ensureCoin('USDT', num(qtyQuote), 'UNIFIED');
+            if (!hasUSDT) {
+                return fail(res, -430, `Premalo USDT/EUR na računu za nakup ${symbol} v znesku ${qtyQuote} USDT.`);
+            }
             const order = await bybit('POST', '/v5/order/create', { 
                 body: { category: 'spot', symbol, side: 'Buy', orderType: 'Market', qty: qtyQuote, marketUnit: 'quoteCoin' } 
             });
-            return order.ok ? ok(res, order.result, `KUPLJENO ${symbol} za $${qtyQuote}`) : fail(res, order.code, order.message);
+            return order.ok ? ok(res, order.result, `Znesek ${qtyQuote} € USPEŠNO spremenjen v ${inst.baseCoin}!`) : fail(res, order.code, order.message);
         } else {
-            // PRODAJA: Preveri celotno razpoložljivo stanje za ta kovanec
+            // PRODAJA: Preveri imetništvo kovanca
             const baseCoin = inst.baseCoin;
             const [uni, fund] = await Promise.all([loadWallet('UNIFIED'), loadFunding()]);
             let freeUni = (uni.coins || []).filter(c => c.coin === baseCoin).reduce((s, c) => s + c.free, 0);
@@ -249,7 +264,7 @@ app.post('/api/trade', async (req, res) => {
             
             let totalFree = freeUni + freeFund;
             if (totalFree <= 0) {
-                return fail(res, -432, `Nimate ${baseCoin} na računu za prodajo (kupite ga najprej ali osvežite stanje).`);
+                return fail(res, -432, `Nimate še kupljenega ${baseCoin}. Za začetek pritisnite KUPI (BUY).`);
             }
 
             if (freeUni <= 0 && freeFund > 0) {
@@ -257,12 +272,11 @@ app.post('/api/trade', async (req, res) => {
                 freeUni = freeFund;
             }
 
-            // Proda celotno prosto količino tega kovanca
             const qtyBase = floorToStep(freeUni, inst.basePrecision);
             const order = await bybit('POST', '/v5/order/create', { 
                 body: { category: 'spot', symbol, side: 'Sell', orderType: 'Market', qty: qtyBase, marketUnit: 'baseCoin' } 
             });
-            return order.ok ? ok(res, order.result, `PRODANO VSE (${qtyBase} ${baseCoin})`) : fail(res, order.code, order.message);
+            return order.ok ? ok(res, order.result, `Pozicija za ${symbol} zaprta! Vse spremenjeno nazaj v denar.`) : fail(res, order.code, order.message);
         }
     } catch (err) {
         return fail(res, -500, `Napaka strežnika: ${err.message}`);
