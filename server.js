@@ -80,7 +80,6 @@ async function publicGet(apiPath, query = '') {
     }
 }
 
-// EMA IN RSI INDIKATORJI
 function emaSeries(values, p) {
     if (!values || !values.length) return [0];
     const k = 2 / (p + 1); const out = [values[0]];
@@ -101,15 +100,16 @@ function rsiLast(closes, p = 14) {
 }
 
 function analyze(candles, currentPrice) {
-    if (!candles || candles.length < 5) {
-        return { signal: 'HOLD', score: 0, reasons: ['Čakam svečke... (Zagon nevtralen)'] };
-    }
-    const closes = candles.map(c => c.c);
+    const closes = (candles && candles.length) ? candles.map(c => c.c) : [];
     if (currentPrice > 0) closes.push(currentPrice);
 
-    const e9 = emaSeries(closes, 9);
-    const e21 = emaSeries(closes, 21);
-    const rsi = rsiLast(closes, 14);
+    if (closes.length < 5) {
+        return { signal: 'HOLD', score: 0, rsi: 50, reasons: ['Čakam na več trgovalnih podatkov...'] };
+    }
+
+    const e9 = emaSeries(closes, Math.min(9, closes.length));
+    const e21 = emaSeries(closes, Math.min(21, closes.length));
+    const rsi = rsiLast(closes, Math.min(14, closes.length - 1));
     
     let score = 0; 
     const reasons = [];
@@ -119,10 +119,10 @@ function analyze(candles, currentPrice) {
 
     if (lastE9 > lastE21) { 
         score += 2; 
-        reasons.push('EMA trend rast (9 > 21)'); 
+        reasons.push('EMA trend rast'); 
     } else { 
         score -= 2; 
-        reasons.push('EMA trend padanje (9 < 21)'); 
+        reasons.push('EMA trend padanje'); 
     }
 
     if (rsi < 40) { 
@@ -152,17 +152,15 @@ app.post('/api/balance', async (req, res) => {
     }
 });
 
-// ZAGOTOVLJENA ANALIZA ZA TOP 5 PAROV (NEBO VEČ OSTALO NA $0.0000)
+// STABILEN PRIKAZ REALNIH CEN IN AI SIGNALOV
 app.post('/api/analyze', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         const totalBudget = num(req.body?.totalAmount) || 25;
         
-        // 1. Pridobi Ticker cene za Futures
         let tickers = await publicGet('/v5/market/tickers', 'category=linear');
         let category = 'linear';
 
-        // Če Futures ne vrne podatkov, poskusi Spot
         if (!tickers.ok || !tickers.result?.list) {
             tickers = await publicGet('/v5/market/tickers', 'category=spot');
             category = 'spot';
@@ -176,23 +174,19 @@ app.post('/api/analyze', async (req, res) => {
                 .slice(0, 5);
         }
 
-        // Rezervni nabor glavnih 5 parov
         if (!top5.length) {
             const fallbackSymbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT'];
             top5 = fallbackSymbols.map(s => ({ symbol: s, lastPrice: '0', price24hPcnt: '0' }));
         }
 
-        // 2. Preveri odprte pozicije
         const posRes = await bybit('GET', '/v5/position/list', { query: 'category=linear&settleCoin=USDT' });
         const openPositions = (posRes.ok && Array.isArray(posRes.result?.list)) ? posRes.result.list : [];
 
-        // 3. Analiziraj vsak par posebej
         const items = await Promise.all(top5.map(async (t) => {
             const symbol = t.symbol;
             let lastPrice = num(t.lastPrice);
             let change24h = (num(t.price24hPcnt) * 100).toFixed(2);
 
-            // Če cena v tickerju nima vrednosti, jo pridobi direktno
             if (lastPrice === 0) {
                 const singleTk = await publicGet('/v5/market/tickers', `category=${category}&symbol=${symbol}`);
                 if (singleTk.ok && singleTk.result?.list?.[0]) {
@@ -201,7 +195,6 @@ app.post('/api/analyze', async (req, res) => {
                 }
             }
 
-            // Pridobi kline podatke za indikatorje
             const kline = await publicGet('/v5/market/kline', `category=${category}&symbol=${symbol}&interval=1&limit=30`);
             const candles = (kline.ok && Array.isArray(kline.result?.list)) 
                 ? kline.result.list.slice().reverse().map(k => ({ c: num(k[4]) })) 
@@ -212,7 +205,7 @@ app.post('/api/analyze', async (req, res) => {
 
             return {
                 symbol,
-                lastPrice: lastPrice > 0 ? lastPrice : 1.00,
+                lastPrice,
                 change24h,
                 hasPosition: !!pos,
                 positionSide: pos ? pos.side : null,
@@ -228,7 +221,6 @@ app.post('/api/analyze', async (req, res) => {
     }
 });
 
-// TRGOVANJE: BUY (LONG) ALI SELL (SHORT) TER ZAPIRANJE
 app.post('/api/trade', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
