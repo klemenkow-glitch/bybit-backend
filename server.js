@@ -6,7 +6,7 @@ const path = require('path');
 const app = express();
 app.set('trust proxy', 1);
 
-// CORS Nastavitve za Render
+// CORS nastavitve
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
@@ -24,7 +24,7 @@ const API_SECRET = (process.env.BYBIT_API_SECRET || '').trim();
 const APP_PASSWORD = (process.env.APP_PASSWORD || '').trim();
 const RECV_WINDOW = '10000';
 
-// POMOČNIKI
+// ---------- POMOČNIKI ----------
 const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const fmt8 = n => n.toFixed(8).replace(/\.?0+$/, '');
@@ -41,6 +41,7 @@ function floorToStep(value, step) {
     return (Math.floor(value / st + 1e-9) * st).toFixed(d);
 }
 
+// ---------- OVERJANJE GESLA ----------
 const sha = s => crypto.createHash('sha256').update(String(s)).digest();
 function checkAuth(req, res) {
     const sent = String(req.body?.password || '').trim();
@@ -51,7 +52,7 @@ function checkAuth(req, res) {
     return true;
 }
 
-// BYBIT KLICI
+// ---------- BYBIT KLICI ----------
 async function bybit(method, apiPath, { query = '', body = null } = {}) {
     const timestamp = Date.now().toString();
     const bodyStr = body ? JSON.stringify(body) : '';
@@ -77,33 +78,73 @@ async function publicGet(apiPath, query = '') {
     return response.data?.retCode === 0 ? { ok: true, result: response.data.result } : { ok: false, message: response.data?.retMsg || 'Napaka API' };
 }
 
+// VARNO PRIDOBIVANJE PODATKOV O PARU (VARNO PRED lotSizeFilter UNDEFINED)
+const instCache = new Map();
+async function getInstrument(symbol) {
+    const c = instCache.get(symbol);
+    if (c && Date.now() - c.ts < 10 * 60 * 1000) return c.val;
+
+    const r = await publicGet('/v5/market/instruments-info', `category=spot&symbol=${symbol}`);
+    const item = r.ok && r.result?.list?.[0] ? r.result.list[0] : null;
+
+    if (!item) {
+        return {
+            symbol,
+            baseCoin: symbol.replace('USDT', ''),
+            quoteCoin: 'USDT',
+            basePrecision: '0.000001',
+            quotePrecision: '0.000001'
+        };
+    }
+
+    const val = {
+        symbol,
+        baseCoin: item.baseCoin,
+        quoteCoin: item.quoteCoin,
+        basePrecision: item.lotSizeFilter?.basePrecision || '0.000001',
+        quotePrecision: item.lotSizeFilter?.quotePrecision || '0.000001'
+    };
+    instCache.set(symbol, { ts: Date.now(), val });
+    return val;
+}
+
+// ---------- STANJA IN PRENOS ----------
 async function loadWallet(accountType) {
     const r = await bybit('GET', '/v5/account/wallet-balance', { query: `accountType=${accountType}` });
-    if (!r.ok) return { ok: false };
+    if (!r.ok) return { ok: false, coins: [] };
     const coins = (r.result?.list?.[0]?.coin || []).map(c => ({ coin: c.coin, account: accountType, total: num(c.walletBalance), free: Math.max(0, num(c.walletBalance) - num(c.locked)) }));
     return { ok: true, coins, totalEquity: num(r.result?.list?.[0]?.totalEquity) };
 }
 
 async function loadFunding() {
     const r = await bybit('GET', '/v5/asset/transfer/query-account-coins-balance', { query: 'accountType=FUND' });
-    if (!r.ok) return { ok: false };
+    if (!r.ok) return { ok: false, coins: [] };
     const coins = (r.result?.balance || []).map(c => ({ coin: c.coin, account: 'FUND', total: num(c.walletBalance), free: num(c.transferBalance || c.walletBalance) }));
     return { ok: true, coins };
 }
 
-async function ensureQuote(coin, need) {
-    const [uni, fund] = await Promise.all([loadWallet('UNIFIED'), loadFunding()]);
-    const uniFree = (uni.coins || []).filter(c => c.coin === coin).reduce((s, c) => s + c.free, 0);
-    const shortfall = need - uniFree;
+async function ensureCoin(coin, need, toAccount = 'UNIFIED') {
+    const fromAccount = toAccount === 'UNIFIED' ? 'FUND' : 'UNIFIED';
+    const toWallet = await loadWallet(toAccount);
+    const freeInTo = (toWallet.coins || []).filter(c => c.coin === coin).reduce((s, c) => s + c.free, 0);
+    const shortfall = need - freeInTo;
+    
     if (shortfall <= 0) return true;
-    const fundFree = (fund.coins || []).filter(c => c.coin === coin).reduce((s, c) => s + c.free, 0);
-    if (fundFree < shortfall) return false;
-    const amount = fmt8(Math.min(shortfall, fundFree));
-    const t = await bybit('POST', '/v5/asset/transfer/inter-transfer', { body: { transferId: crypto.randomUUID(), coin, amount, fromAccountType: 'FUND', toAccountType: 'UNIFIED' } });
-    await wait(500);
+
+    const fromWallet = fromAccount === 'FUND' ? await loadFunding() : await loadWallet('UNIFIED');
+    const freeInFrom = (fromWallet.coins || []).filter(c => c.coin === coin).reduce((s, c) => s + c.free, 0);
+    
+    if (freeInFrom < shortfall) return false;
+
+    const amount = fmt8(Math.min(shortfall, freeInFrom));
+    const t = await bybit('POST', '/v5/asset/transfer/inter-transfer', { 
+        body: { transferId: crypto.randomUUID(), coin, amount, fromAccountType: fromAccount, toAccountType: toAccount } 
+    });
+    await wait(600);
     return t.ok;
 }
 
+// ---------- INDIKATORJI ----------
 function emaSeries(values, p) {
     const k = 2 / (p + 1); const out = [values[0]];
     for (let i = 1; i < values.length; i++) out.push(values[i] * k + out[i - 1] * (1 - k));
@@ -185,7 +226,7 @@ app.post('/api/analyze', async (req, res) => {
     }
 });
 
-// HITRO TRGOVANJE (BUY / SELL) - ZAVAROVANO PRED HTML DOCTYPE NAPAKAMI
+// HITRO TRGOVANJE - POTPOVOLNO VAROVANO PRED `lotSizeFilter` NAPAKAMI
 app.post('/api/trade', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -197,32 +238,38 @@ app.post('/api/trade', async (req, res) => {
             return fail(res, -422, 'Neveljavni podatki za naročilo.');
         }
 
-        const inst = await publicGet('/v5/market/instruments-info', `category=spot&symbol=${symbol}`);
-        if (!inst.ok) return fail(res, -404, 'Par ni najden na Bybit Spot.');
-        
-        const filter = inst.result.list[0].lotSizeFilter;
+        const inst = await getInstrument(symbol);
         const tk = await publicGet('/v5/market/tickers', `category=spot&symbol=${symbol}`);
         const price = num(tk.result?.list?.[0]?.lastPrice);
 
         if (!price) return fail(res, -406, 'Cene ni mogoče pridobiti.');
 
         if (side === 'Buy') {
-            const qtyQuote = floorToStep(amount, filter.quotePrecision);
-            await ensureQuote('USDT', num(qtyQuote));
+            const qtyQuote = floorToStep(amount, inst.quotePrecision);
+            await ensureCoin('USDT', num(qtyQuote), 'UNIFIED');
             const order = await bybit('POST', '/v5/order/create', { 
                 body: { category: 'spot', symbol, side: 'Buy', orderType: 'Market', qty: qtyQuote, marketUnit: 'quoteCoin' } 
             });
             return order.ok ? ok(res, order.result, `KUPLJENO ${symbol}`) : fail(res, order.code, order.message);
         } else {
-            const uni = await loadWallet('UNIFIED');
-            const baseCoin = inst.result.list[0].baseCoin;
-            const free = (uni.coins || []).filter(c => c.coin === baseCoin).reduce((s, c) => s + c.free, 0);
+            // PRODAJA: Preveri prosta sredstva na UNIFIED in FUNDING
+            const baseCoin = inst.baseCoin;
+            const [uni, fund] = await Promise.all([loadWallet('UNIFIED'), loadFunding()]);
+            let freeUni = (uni.coins || []).filter(c => c.coin === baseCoin).reduce((s, c) => s + c.free, 0);
+            let freeFund = (fund.coins || []).filter(c => c.coin === baseCoin).reduce((s, c) => s + c.free, 0);
             
-            if (free <= 0) {
-                return fail(res, -432, `Nimate dovolj ${baseCoin} na računu za prodajo.`);
+            let totalFree = freeUni + freeFund;
+            if (totalFree <= 0) {
+                return fail(res, -432, `Nimate ${baseCoin} na računu za prodajo.`);
             }
 
-            const qtyBase = floorToStep(Math.min(free, amount / price), filter.basePrecision);
+            // Če so kovaneci na FUNDING računu, jih samodejno prenesemo na UNIFIED
+            if (freeUni <= 0 && freeFund > 0) {
+                await ensureCoin(baseCoin, freeFund, 'UNIFIED');
+                freeUni = freeFund;
+            }
+
+            const qtyBase = floorToStep(Math.min(freeUni, amount / price), inst.basePrecision);
             const order = await bybit('POST', '/v5/order/create', { 
                 body: { category: 'spot', symbol, side: 'Sell', orderType: 'Market', qty: qtyBase, marketUnit: 'baseCoin' } 
             });
@@ -233,9 +280,9 @@ app.post('/api/trade', async (req, res) => {
     }
 });
 
-// VEDNO VRNI JSON ZA VSE NEZNANE POTI (Niti ena pot več ne vrne HTML-ja)
+// VAROVALO PRED DOCTYPE / HTML NAPAKAMI
 app.use('*', (req, res) => {
-    res.status(404).json({ status: 'error', code: 404, message: 'Neznana API pot ali datoteka.', data: null });
+    res.status(404).json({ status: 'error', code: 404, message: 'API pot ne obstaja.', data: null });
 });
 
 const PORT = process.env.PORT || 3000;
