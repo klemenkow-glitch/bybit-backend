@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bybit AI Terminal (MAINNET)</title>
+    <title>Bybit AI Trading Terminal (MAINNET)</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121214; color: #ffffff; padding: 20px; margin: 0; }
         .container { max-width: 650px; margin: auto; }
@@ -19,7 +19,7 @@
         .btn-buy:hover { background-color: #45a049; }
         .btn-sell { background-color: #f44336; color: #fff; width: 48%; float: right; }
         .btn-sell:hover { background-color: #da190b; }
-        .btn-disabled { background-color: #444 !important; color: #888 !important; cursor: not-allowed !important; }
+        .btn-close { background-color: #ff9800; color: #000; width: 100%; margin-top: 6px; }
         .clear { clear: both; }
         .status { margin-top: 15px; padding: 12px; border-radius: 4px; background: #2b2b30; word-break: break-all; font-size: 13px; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
@@ -33,7 +33,7 @@
         .badge-BUY { background: #4CAF50; color: #fff; }
         .badge-SELL { background: #f44336; color: #fff; }
         .badge-HOLD { background: #f7a600; color: #000; }
-        .owned-tag { font-size: 11px; background: #2e7d32; color: #fff; padding: 2px 6px; border-radius: 3px; margin-left: 5px; }
+        .pos-badge { font-size: 11px; background: #2196F3; color: #fff; padding: 2px 6px; border-radius: 3px; margin-left: 5px; }
     </style>
 </head>
 <body>
@@ -45,7 +45,7 @@
         <label>Geslo aplikacije (APP_PASSWORD):</label>
         <input type="password" id="appPassword" placeholder="Vnesite geslo aplikacije">
 
-        <label>Znesek za trgovanje (€/$):</label>
+        <label>Znesek za posamezen trade (€/$):</label>
         <input type="number" id="totalBudget" value="26" placeholder="Vnesite znesek">
 
         <button class="btn-connect" onclick="connectAndFetch()">Poveži in Osveži Stanje</button>
@@ -107,7 +107,7 @@
             if (resData.status === 'success' && resData.data) {
                 const totalEquity = resData.data.totalEquity ? ` (${resData.data.totalEquity.toFixed(2)} USD)` : '';
                 statusBox.style.color = '#4CAF50';
-                statusBox.innerHTML = `<b>Povezano uspešno!</b> Skupno stanje: <b>${totalEquity}</b>`;
+                statusBox.innerHTML = `<b>Povezano uspešno!</b> Stanje: <b>${totalEquity}</b>`;
 
                 const coins = resData.data.coins || [];
                 if (coins.length > 0) {
@@ -167,14 +167,14 @@
                     const sig = item.signal || 'HOLD';
                     const price = parseFloat(item.lastPrice || 0).toFixed(4);
                     const reasons = (item.reasons || []).join(' | ');
-                    const isOwned = item.isOwned;
-                    const heldText = isOwned ? `<span class="owned-tag">ODPRTA POZICIJA (${item.heldAmount.toFixed(4)} ${item.baseCoin})</span>` : '';
+                    const hasPos = item.hasPosition;
+                    const posInfo = hasPos ? `<span class="pos-badge">ODPRTO: ${item.positionSide} (PnL: $${item.pnl})</span>` : '';
 
                     container.innerHTML += `
                         <div class="signal-card signal-${sig}">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
                                 <div>
-                                    <b style="font-size: 16px;">${item.symbol}</b> ${heldText}
+                                    <b style="font-size: 16px;">${item.symbol}</b> ${posInfo}
                                     <br>
                                     <span style="font-size: 13px; color: #aaa;">Cena: <b>$${price}</b></span>
                                 </div>
@@ -188,13 +188,11 @@
                             </div>
 
                             <div style="margin-top: 10px;">
-                                <button class="btn-buy" onclick="executeTrade('${item.symbol}', 'Buy', '${fullAmt}')">KUPI (${fullAmt} €)</button>
-                                
-                                ${isOwned 
-                                    ? `<button class="btn-sell" onclick="executeTrade('${item.symbol}', 'Sell', '${fullAmt}')">ZAPRI (PRODAJ VSE)</button>`
-                                    : `<button class="btn-sell btn-disabled" onclick="alert('Za prodajo morate najprej kupiti ta kovanec z gumbom KUPI!')">PRODAJ (Ni kupljeno)</button>`
-                                }
+                                <button class="btn-buy" onclick="executeTrade('${item.symbol}', 'Buy', '${fullAmt}', 'open')">KUPI / LONG (${fullAmt} €)</button>
+                                <button class="btn-sell" onclick="executeTrade('${item.symbol}', 'Sell', '${fullAmt}', 'open')">PRODAJ / SHORT (${fullAmt} €)</button>
                                 <div class="clear"></div>
+                                
+                                ${hasPos ? `<button class="btn-close" onclick="executeTrade('${item.symbol}', 'Buy', '0', 'close')">ZAPRI POZICIJO (Zajemi dobiček/izgubo)</button>` : ''}
                             </div>
                         </div>
                     `;
@@ -205,7 +203,7 @@
         }
     }
 
-    async function executeTrade(symbol, side, amount) {
+    async function executeTrade(symbol, side, amount, action = 'open') {
         const password = document.getElementById('appPassword').value.trim();
 
         if (!password) {
@@ -213,9 +211,9 @@
             return;
         }
 
-        const msg = side === 'Buy' 
-            ? `Ali želite pretvoriti ${amount} € v ${symbol}?` 
-            : `Ali želite prodati celotno pozicijo ${symbol} in vrniti denar?`;
+        const msg = action === 'close'
+            ? `Ali želite ZAPRETI pozicijo za ${symbol}?`
+            : `Ali želite odpreti ${side === 'Buy' ? 'LONG (na rast)' : 'SHORT (na padec)'} trade za ${symbol} v znesku ${amount} €?`;
 
         if (!confirm(msg)) return;
 
@@ -223,13 +221,13 @@
             const res = await fetch(`${BACKEND_URL}/api/trade`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ password, symbol, side, amount })
+                body: JSON.stringify({ password, symbol, side, amount, action })
             });
 
             const data = await res.json();
 
             if (data.status === 'success' || data.code === 0) {
-                alert(`USPEŠNO: ${data.message || side + ' ' + symbol}`);
+                alert(`USPEŠNO: ${data.message}`);
                 connectAndFetch();
             } else {
                 alert(`Bybit Napaka (${data.code}): ${data.message}`);
