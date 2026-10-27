@@ -75,7 +75,7 @@
     <div class="card">
         <h3>TOP 5 AI Trgovalni Signali (Real-Time)</h3>
         <div id="aiSignalsContainer">
-            <div style="color: #777; text-align: center; padding: 10px;">Nalaganje 5 parov...</div>
+            <div style="color: #777; text-align: center; padding: 10px;">Vnesite geslo in kliknite Poveži...</div>
         </div>
     </div>
 </div>
@@ -167,7 +167,8 @@
 
                 items.forEach(item => {
                     const sig = item.signal || 'HOLD';
-                    const price = parseFloat(item.lastPrice || 0).toFixed(4);
+                    const priceVal = parseFloat(item.lastPrice || 0);
+                    const price = priceVal > 0 ? (priceVal < 10 ? priceVal.toFixed(4) : priceVal.toFixed(2)) : '0.00';
                     const reasons = (item.reasons || []).join(' | ');
                     const hasPos = item.hasPosition;
                     
