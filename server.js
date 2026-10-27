@@ -14,7 +14,7 @@ const API_SECRET = (process.env.BYBIT_API_SECRET || '').trim();
 const APP_PASSWORD = (process.env.APP_PASSWORD || '').trim();
 const RECV_WINDOW = '10000';
 
-// ---------- Pomočniki ----------
+// ---------- POMOČNIKI ----------
 const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const fmt8 = n => n.toFixed(8).replace(/\.?0+$/, '');
@@ -43,7 +43,7 @@ function floorToStep(value, step) {
     return n.toFixed(d);
 }
 
-// ---------- Auth Protection ----------
+// ---------- ZAŠČITA GESLA ----------
 const fails = new Map();
 const MAX_FAILS = 5;
 const LOCK_MS = 15 * 60 * 1000;
@@ -78,7 +78,7 @@ function keysMissing(res) {
     return false;
 }
 
-// ---------- Bybit Klici ----------
+// ---------- BYBIT KLICI ----------
 async function bybit(method, apiPath, { query = '', body = null } = {}) {
     const timestamp = Date.now().toString();
     const bodyStr = body ? JSON.stringify(body) : '';
@@ -121,7 +121,7 @@ async function publicGet(apiPath, query = '') {
     return { ok: false, code: data.retCode ?? -1, message: data.retMsg || 'Neznana napaka pri Bybitu' };
 }
 
-// ---------- Stanja Računov ----------
+// ---------- STANJA RAČUNOV ----------
 async function loadWallet(accountType) {
     const r = await bybit('GET', '/v5/account/wallet-balance', { query: `accountType=${accountType}` });
     if (!r.ok) return { accountType, ok: false, message: `${r.message} (${r.code})` };
@@ -157,7 +157,7 @@ async function getUnifiedCached(maxAge = 5000) {
     return v;
 }
 
-// ---------- Prenos Funding <-> Unified ----------
+// ---------- PRENOS FUNDING <-> UNIFIED ----------
 async function doTransfer(coin, amount, from, to) {
     return bybit('POST', '/v5/asset/transfer/inter-transfer', {
         body: { transferId: crypto.randomUUID(), coin, amount, fromAccountType: from, toAccountType: to }
@@ -209,10 +209,9 @@ async function getInstrument(symbol) {
     return val;
 }
 
-// ---------- Hitri Indikatorji in Svečke ----------
+// ---------- HITRI INDIKATORJI IN SVEČKE ----------
 const klineCache = new Map();
 async function getCandles(symbol, interval) {
-    // Če je izbran hiter interval (1s, 10s, 20s), uporabimo 1m za izračun pokazateljev
     const fetchInterval = ['1s', '10s', '20s'].includes(interval) ? '1' : (interval || '15');
     const key = `${symbol}:${fetchInterval}`;
     const c = klineCache.get(key);
@@ -328,6 +327,10 @@ async function analyzeSymbol(symbol, interval, uni) {
 }
 
 // ====================== API ROUTE ======================
+app.get('/api/health', (req, res) => {
+    ok(res, { passwordSet: APP_PASSWORD.length > 0, keySet: API_KEY.length > 0, baseUrl: BYBIT_URL });
+});
+
 app.post('/api/balance', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -348,24 +351,35 @@ app.post('/api/balance', async (req, res) => {
     }
 });
 
-// REAL-TIME ANALIZA & TRENUTNO SKENIRANJE (1s, 10s, 20s podpora)
+// REAL-TIME ANALIZA & TOP 5 AVTOMATSKI SKENER
 app.post('/api/analyze', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         if (keysMissing(res)) return;
 
         const interval = String(req.body?.interval || '10s');
-        const raw = Array.isArray(req.body?.symbols) ? req.body.symbols : [];
-        const totalAmount = num(req.body?.totalAmount); // Za samodejno razdelitev
-        const symbols = [...new Set(raw.map(cleanSymbol).filter(validSymbol))].slice(0, 5);
-        
-        if (!symbols.length) return fail(res, -422, 'Vpišite vsaj en trg.');
+        let symbols = Array.isArray(req.body?.symbols) 
+            ? req.body.symbols.map(cleanSymbol).filter(validSymbol) 
+            : [];
+        const totalAmount = num(req.body?.totalAmount);
+
+        // Če polje nima veljavnih parov, samodejno potegne TOP 5 z Bybita
+        if (!symbols.length) {
+            const tickers = await publicGet('/v5/market/tickers', 'category=spot');
+            if (tickers.ok && tickers.result?.list) {
+                symbols = tickers.result.list
+                    .filter(t => t.symbol.endsWith('USDT'))
+                    .sort((a, b) => parseFloat(b.turnover24h || 0) - parseFloat(a.turnover24h || 0))
+                    .slice(0, 5)
+                    .map(t => t.symbol);
+            }
+        } else {
+            symbols = [...new Set(symbols)].slice(0, 5);
+        }
 
         const uni = await getUnifiedCached();
         const items = await Promise.all(symbols.map(s => analyzeSymbol(s, interval, uni)));
-        
-        // Samodejna razdelitev zneska med aktivne trge
-        const amountPerSymbol = totalAmount > 0 ? (totalAmount / symbols.length).toFixed(4) : 0;
+        const amountPerSymbol = totalAmount > 0 ? (totalAmount / (symbols.length || 1)).toFixed(2) : 0;
 
         return ok(res, { items, interval, amountPerSymbol, ts: Date.now() });
     } catch (err) {
@@ -417,5 +431,7 @@ app.post('/api/trade', async (req, res) => {
     }
 });
 
+app.use('/api', (req, res) => res.status(404).json({ status: 'error', message: 'Neznana pot.' }));
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 BACKEND TEČE NA PORTU ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 STREŽNIK TEČE NA PORTU ${PORT}`));
