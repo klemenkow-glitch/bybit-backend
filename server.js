@@ -48,38 +48,47 @@ function checkAuth(req, res) {
 }
 
 async function bybit(method, apiPath, { query = '', body = null } = {}) {
-    const timestamp = Date.now().toString();
-    const bodyStr = body ? JSON.stringify(body) : '';
-    const payload = method === 'GET' ? query : bodyStr;
-    const signature = crypto.createHmac('sha256', API_SECRET).update(timestamp + API_KEY + RECV_WINDOW + payload).digest('hex');
-    const headers = { 
-        'X-BAPI-API-KEY': API_KEY, 
-        'X-BAPI-SIGN': signature, 
-        'X-BAPI-TIMESTAMP': timestamp, 
-        'X-BAPI-RECV-WINDOW': RECV_WINDOW 
-    };
-    const url = `${BYBIT_URL}${apiPath}${method === 'GET' && query ? '?' + query : ''}`;
-    let response = method === 'GET' 
-        ? await axios.get(url, { headers, timeout: 15000, validateStatus: () => true })
-        : await axios.post(url, bodyStr, { headers: { ...headers, 'Content-Type': 'application/json' }, timeout: 15000, validateStatus: () => true });
-    
-    return response.data?.retCode === 0 ? { ok: true, result: response.data.result } : { ok: false, code: response.data?.retCode || -1, message: response.data?.retMsg || 'Napaka Bybit API' };
+    try {
+        const timestamp = Date.now().toString();
+        const bodyStr = body ? JSON.stringify(body) : '';
+        const payload = method === 'GET' ? query : bodyStr;
+        const signature = crypto.createHmac('sha256', API_SECRET).update(timestamp + API_KEY + RECV_WINDOW + payload).digest('hex');
+        const headers = { 
+            'X-BAPI-API-KEY': API_KEY, 
+            'X-BAPI-SIGN': signature, 
+            'X-BAPI-TIMESTAMP': timestamp, 
+            'X-BAPI-RECV-WINDOW': RECV_WINDOW 
+        };
+        const url = `${BYBIT_URL}${apiPath}${method === 'GET' && query ? '?' + query : ''}`;
+        let response = method === 'GET' 
+            ? await axios.get(url, { headers, timeout: 10000, validateStatus: () => true })
+            : await axios.post(url, bodyStr, { headers: { ...headers, 'Content-Type': 'application/json' }, timeout: 10000, validateStatus: () => true });
+        
+        return response.data?.retCode === 0 ? { ok: true, result: response.data.result } : { ok: false, code: response.data?.retCode || -1, message: response.data?.retMsg || 'Napaka Bybit API' };
+    } catch (e) {
+        return { ok: false, code: -500, message: e.message };
+    }
 }
 
 async function publicGet(apiPath, query = '') {
-    const url = `${BYBIT_URL}${apiPath}${query ? '?' + query : ''}`;
-    const response = await axios.get(url, { timeout: 15000, validateStatus: () => true });
-    return response.data?.retCode === 0 ? { ok: true, result: response.data.result } : { ok: false, message: response.data?.retMsg || 'Napaka API' };
+    try {
+        const url = `${BYBIT_URL}${apiPath}${query ? '?' + query : ''}`;
+        const response = await axios.get(url, { timeout: 10000, validateStatus: () => true });
+        return response.data?.retCode === 0 ? { ok: true, result: response.data.result } : { ok: false, message: response.data?.retMsg || 'Napaka API' };
+    } catch (e) {
+        return { ok: false, message: e.message };
+    }
 }
 
 function emaSeries(values, p) {
+    if (!values || !values.length) return [0];
     const k = 2 / (p + 1); const out = [values[0]];
     for (let i = 1; i < values.length; i++) out.push(values[i] * k + out[i - 1] * (1 - k));
     return out;
 }
 
 function rsiLast(closes, p = 14) {
-    if (closes.length <= p) return 50;
+    if (!closes || closes.length <= p) return 50;
     let g = 0, l = 0;
     for (let i = 1; i <= p; i++) { const d = closes[i] - closes[i - 1]; if (d >= 0) g += d; else l -= d; }
     let ag = g / p, al = l / p;
@@ -91,7 +100,7 @@ function rsiLast(closes, p = 14) {
 }
 
 function analyze(candles) {
-    if (!candles || candles.length < 20) return { signal: 'HOLD', score: 0, reasons: ['Osvežujem indikatorje...'] };
+    if (!candles || candles.length < 15) return { signal: 'HOLD', score: 0, reasons: ['Osvežujem indikatorje...'] };
     const closes = candles.map(c => c.c);
     const e9 = emaSeries(closes, 9), e21 = emaSeries(closes, 21);
     const rsi = rsiLast(closes, 14);
@@ -120,26 +129,25 @@ app.post('/api/balance', async (req, res) => {
     }
 });
 
-// ZAGOTOVLJEN PRIKAZ 5 PAROV (Z REZERVNO LISTO)
+// ANALIZA 5 TRGOV V REALNEM ČASU (VARNO PRED ZRUŠITVIJO STREŽNIKA)
 app.post('/api/analyze', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         const totalBudget = num(req.body?.totalAmount) || 25;
         
         const tickers = await publicGet('/v5/market/tickers', 'category=linear');
-        let symbols = [];
+        let symbolsList = [];
 
-        if (tickers.ok && tickers.result?.list) {
-            symbols = tickers.result.list
-                .filter(t => t.symbol.endsWith('USDT'))
-                .sort((a, b) => parseFloat(b.turnover24h || 0) - parseFloat(a.turnover24h || 0))
+        if (tickers.ok && Array.isArray(tickers.result?.list)) {
+            symbolsList = tickers.result.list
+                .filter(t => t.symbol && t.symbol.endsWith('USDT'))
+                .sort((a, b) => num(b.turnover24h) - num(a.turnover24h))
                 .slice(0, 5)
                 .map(t => ({ symbol: t.symbol, lastPrice: num(t.lastPrice), change24h: (num(t.price24hPcnt) * 100).toFixed(2) }));
         }
 
-        // Rezervni plan, če API ne vrne seznamov – da ne ostane prazno!
-        if (!symbols.length) {
-            symbols = [
+        if (!symbolsList.length) {
+            symbolsList = [
                 { symbol: 'BTCUSDT', lastPrice: 0, change24h: '0.00' },
                 { symbol: 'ETHUSDT', lastPrice: 0, change24h: '0.00' },
                 { symbol: 'SOLUSDT', lastPrice: 0, change24h: '0.00' },
@@ -149,9 +157,9 @@ app.post('/api/analyze', async (req, res) => {
         }
 
         const posRes = await bybit('GET', '/v5/position/list', { query: 'category=linear&settleCoin=USDT' });
-        const openPositions = posRes.ok ? (posRes.result?.list || []) : [];
+        const openPositions = (posRes.ok && Array.isArray(posRes.result?.list)) ? posRes.result.list : [];
 
-        const items = await Promise.all(symbols.map(async (s) => {
+        const items = await Promise.all(symbolsList.map(async (s) => {
             let price = s.lastPrice;
             let chg = s.change24h;
 
@@ -164,9 +172,11 @@ app.post('/api/analyze', async (req, res) => {
             }
 
             const kline = await publicGet('/v5/market/kline', `category=linear&symbol=${s.symbol}&interval=1&limit=40`);
-            const candles = kline.ok ? kline.result.list.slice().reverse().map(k => ({ c: num(k[4]) })) : [];
+            const candles = (kline.ok && Array.isArray(kline.result?.list)) 
+                ? kline.result.list.slice().reverse().map(k => ({ c: num(k[4]) })) 
+                : [];
+            
             const ai = analyze(candles);
-
             const pos = openPositions.find(p => p.symbol === s.symbol && num(p.size) > 0);
 
             return {
@@ -176,14 +186,14 @@ app.post('/api/analyze', async (req, res) => {
                 hasPosition: !!pos,
                 positionSide: pos ? pos.side : null,
                 positionSize: pos ? pos.size : 0,
-                pnl: pos ? num(pos.unrealisedPnl).toFixed(2) : 0,
+                pnl: pos ? num(pos.unrealisedPnl).toFixed(2) : '0.00',
                 ...ai
             };
         }));
 
         return ok(res, { items, fullAmount: totalBudget, ts: Date.now() });
     } catch (err) {
-        return fail(res, -500, err.message);
+        return ok(res, { items: [], fullAmount: 25, error: err.message });
     }
 });
 
@@ -216,7 +226,7 @@ app.post('/api/trade', async (req, res) => {
             const order = await bybit('POST', '/v5/order/create', {
                 body: { category: 'linear', symbol, side: closeSide, orderType: 'Market', qty: pos.size, reduceOnly: true }
             });
-            return order.ok ? ok(res, order.result, `Trade ${symbol} ZAPRT! Dobiček obračunan.`) : fail(res, order.code, order.message);
+            return order.ok ? ok(res, order.result, `Trade ${symbol} ZAPRT!`) : fail(res, order.code, order.message);
         } else {
             const qtyBase = floorToStep(amount / price, qtyStep);
             const order = await bybit('POST', '/v5/order/create', {
@@ -232,6 +242,15 @@ app.post('/api/trade', async (req, res) => {
 
 app.use('*', (req, res) => {
     res.status(404).json({ status: 'error', code: 404, message: 'API pot ne obstaja.', data: null });
+});
+
+// GLOBALNI CAPTURE NAPAK - PREPREČI EXIT STATUS 1 NA RENDERJU
+process.on('uncaughtException', (err) => {
+    console.error('Zaščiteno pred zrušitvijo (uncaughtException):', err.message);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Zaščiteno pred zrušitvijo (unhandledRejection):', reason);
 });
 
 const PORT = process.env.PORT || 3000;
