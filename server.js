@@ -91,7 +91,7 @@ function rsiLast(closes, p = 14) {
 }
 
 function analyze(candles) {
-    if (candles.length < 30) return { signal: 'HOLD', score: 0, reasons: ['Čakam podatke...'] };
+    if (!candles || candles.length < 20) return { signal: 'HOLD', score: 0, reasons: ['Osvežujem indikatorje...'] };
     const closes = candles.map(c => c.c);
     const e9 = emaSeries(closes, 9), e21 = emaSeries(closes, 21);
     const rsi = rsiLast(closes, 14);
@@ -120,34 +120,59 @@ app.post('/api/balance', async (req, res) => {
     }
 });
 
-// ANALIZA 5 TRGOV IN PREVERJANJE ODPRTIH TRADE-OV
+// ZAGOTOVLJEN PRIKAZ 5 PAROV (Z REZERVNO LISTO)
 app.post('/api/analyze', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         const totalBudget = num(req.body?.totalAmount) || 25;
-        const tickers = await publicGet('/v5/market/tickers', 'category=linear');
         
-        if (!tickers.ok) return fail(res, -1, 'Ni mogoče pridobiti cen');
+        const tickers = await publicGet('/v5/market/tickers', 'category=linear');
+        let symbols = [];
 
-        const top5 = tickers.result.list
-            .filter(t => t.symbol.endsWith('USDT'))
-            .sort((a, b) => parseFloat(b.turnover24h || 0) - parseFloat(a.turnover24h || 0))
-            .slice(0, 5);
+        if (tickers.ok && tickers.result?.list) {
+            symbols = tickers.result.list
+                .filter(t => t.symbol.endsWith('USDT'))
+                .sort((a, b) => parseFloat(b.turnover24h || 0) - parseFloat(a.turnover24h || 0))
+                .slice(0, 5)
+                .map(t => ({ symbol: t.symbol, lastPrice: num(t.lastPrice), change24h: (num(t.price24hPcnt) * 100).toFixed(2) }));
+        }
+
+        // Rezervni plan, če API ne vrne seznamov – da ne ostane prazno!
+        if (!symbols.length) {
+            symbols = [
+                { symbol: 'BTCUSDT', lastPrice: 0, change24h: '0.00' },
+                { symbol: 'ETHUSDT', lastPrice: 0, change24h: '0.00' },
+                { symbol: 'SOLUSDT', lastPrice: 0, change24h: '0.00' },
+                { symbol: 'XRPUSDT', lastPrice: 0, change24h: '0.00' },
+                { symbol: 'ADAUSDT', lastPrice: 0, change24h: '0.00' }
+            ];
+        }
 
         const posRes = await bybit('GET', '/v5/position/list', { query: 'category=linear&settleCoin=USDT' });
-        const openPositions = posRes.ok ? (posRes.result.list || []) : [];
+        const openPositions = posRes.ok ? (posRes.result?.list || []) : [];
 
-        const items = await Promise.all(top5.map(async (t) => {
-            const kline = await publicGet('/v5/market/kline', `category=linear&symbol=${t.symbol}&interval=1&limit=60`);
+        const items = await Promise.all(symbols.map(async (s) => {
+            let price = s.lastPrice;
+            let chg = s.change24h;
+
+            if (price === 0) {
+                const tk = await publicGet('/v5/market/tickers', `category=linear&symbol=${s.symbol}`);
+                if (tk.ok && tk.result?.list?.[0]) {
+                    price = num(tk.result.list[0].lastPrice);
+                    chg = (num(tk.result.list[0].price24hPcnt) * 100).toFixed(2);
+                }
+            }
+
+            const kline = await publicGet('/v5/market/kline', `category=linear&symbol=${s.symbol}&interval=1&limit=40`);
             const candles = kline.ok ? kline.result.list.slice().reverse().map(k => ({ c: num(k[4]) })) : [];
             const ai = analyze(candles);
 
-            const pos = openPositions.find(p => p.symbol === t.symbol && num(p.size) > 0);
+            const pos = openPositions.find(p => p.symbol === s.symbol && num(p.size) > 0);
 
             return {
-                symbol: t.symbol,
-                lastPrice: num(t.lastPrice),
-                change24h: (num(t.price24hPcnt) * 100).toFixed(2),
+                symbol: s.symbol,
+                lastPrice: price,
+                change24h: chg,
                 hasPosition: !!pos,
                 positionSide: pos ? pos.side : null,
                 positionSize: pos ? pos.size : 0,
@@ -162,7 +187,6 @@ app.post('/api/analyze', async (req, res) => {
     }
 });
 
-// ODPIRANJE (BUY/SELL) IN ZAPIRANJE TRADE-A
 app.post('/api/trade', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -192,13 +216,13 @@ app.post('/api/trade', async (req, res) => {
             const order = await bybit('POST', '/v5/order/create', {
                 body: { category: 'linear', symbol, side: closeSide, orderType: 'Market', qty: pos.size, reduceOnly: true }
             });
-            return order.ok ? ok(res, order.result, `Trade ${symbol} ZAPRT! Dobiček/izguba obračunana.`) : fail(res, order.code, order.message);
+            return order.ok ? ok(res, order.result, `Trade ${symbol} ZAPRT! Dobiček obračunan.`) : fail(res, order.code, order.message);
         } else {
             const qtyBase = floorToStep(amount / price, qtyStep);
             const order = await bybit('POST', '/v5/order/create', {
                 body: { category: 'linear', symbol, side, orderType: 'Market', qty: qtyBase }
             });
-            const tip = side === 'Buy' ? 'BUY (Rast)' : 'SELL (Padec)';
+            const tip = side === 'Buy' ? 'BUY (LONG)' : 'SELL (SHORT)';
             return order.ok ? ok(res, order.result, `Trade ${tip} za ${symbol} uspešno ODPRT!`) : fail(res, order.code, order.message);
         }
     } catch (err) {
