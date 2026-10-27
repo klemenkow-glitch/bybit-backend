@@ -19,30 +19,36 @@
         .btn-buy:hover { background-color: #45a049; }
         .btn-sell { background-color: #f44336; color: #fff; width: 48%; float: right; }
         .btn-sell:hover { background-color: #da190b; }
+        .btn-close { background-color: #ff9800; color: #000; width: 100%; margin-top: 6px; }
         .clear { clear: both; }
         .status { margin-top: 15px; padding: 12px; border-radius: 4px; background: #2b2b30; word-break: break-all; font-size: 13px; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { text-align: left; padding: 8px; border-bottom: 1px solid #333; font-size: 13px; }
         th { color: #f7a600; }
-        .signal-card { background: #26262c; padding: 12px; border-radius: 6px; margin-top: 8px; border-left: 4px solid #777; }
+        .signal-card { background: #26262c; padding: 14px; border-radius: 6px; margin-top: 10px; border-left: 5px solid #777; }
         .signal-BUY { border-left-color: #4CAF50; }
         .signal-SELL { border-left-color: #f44336; }
         .signal-HOLD { border-left-color: #f7a600; }
-        .badge { font-weight: bold; padding: 3px 6px; border-radius: 3px; font-size: 12px; }
+        .badge { font-weight: bold; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
         .badge-BUY { background: #4CAF50; color: #fff; }
         .badge-SELL { background: #f44336; color: #fff; }
         .badge-HOLD { background: #f7a600; color: #000; }
+        .pnl-plus { color: #4CAF50; font-weight: bold; }
+        .pnl-minus { color: #f44336; font-weight: bold; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <!-- GESLO IN POVEZAVA -->
+    <!-- POVEZAVA -->
     <div class="card">
         <h2>Bybit AI Terminal (MAINNET)</h2>
         
         <label>Geslo aplikacije (APP_PASSWORD):</label>
         <input type="password" id="appPassword" placeholder="Vnesite geslo aplikacije">
+
+        <label>Skupni znesek za trgovanje (€/$):</label>
+        <input type="number" id="totalBudget" value="26" placeholder="Vnesite celotni znesek">
 
         <button class="btn-connect" onclick="connectAndFetch()">Poveži in Osveži Stanje</button>
 
@@ -67,58 +73,23 @@
         </table>
     </div>
 
-    <!-- AI SKENER & SIGNALI V REALNEM ČASU -->
+    <!-- AI SKENER & PREDELEK ZA 5 PAROV -->
     <div class="card">
-        <h3>AI Skener & Signali (Real-Time)</h3>
+        <h3>TOP 5 AI Trgovalni Signali (Real-Time)</h3>
+        <div style="font-size: 12px; color: #aaa; margin-bottom: 10px;">
+            AI spremlja kazalnike v ozadju. Ko vidite ugoden signal, ročno pritisnite KUPI ali PRODAJ.
+        </div>
         
-        <label>Trgovalni pari za spremljanje (pustite prazno za TOP 5 z Bybita):</label>
-        <input type="text" id="scanSymbols" placeholder="npr. BTCUSDT, ETHUSDT ali pustite prazno">
-
-        <div style="display: flex; gap: 10px;">
-            <div style="width: 50%;">
-                <label>Časovna analiza:</label>
-                <select id="scanInterval">
-                    <option value="1s">1 sekunda (Real-time)</option>
-                    <option value="10s" selected>10 sekund (Priporočeno)</option>
-                    <option value="20s">20 sekund</option>
-                    <option value="1m">1 minuta</option>
-                </select>
-            </div>
-            <div style="width: 50%;">
-                <label>Skupni znesek za razdelitev (€/$):</label>
-                <input type="number" id="totalBudget" value="26" placeholder="npr. 26">
-            </div>
+        <div id="aiSignalsContainer">
+            <div style="color: #777; text-align: center; padding: 10px;">Vnesite geslo in kliknite Poveži...</div>
         </div>
-
-        <div id="aiSignalsContainer" style="margin-top: 15px;">
-            <div style="color: #777; font-size: 13px; text-align: center;">Nalaganje trenutnih AI signalov...</div>
-        </div>
-    </div>
-
-    <!-- HITRO TRGOVANJE -->
-    <div class="card">
-        <h3>Hitro Trgovanje (Market Order)</h3>
-        
-        <label>Trgovalni Par (Symbol):</label>
-        <input type="text" id="tradeSymbol" value="BTCUSDT">
-
-        <label>Znesek ali Količina za Trgovanje:</label>
-        <input type="number" step="any" id="tradeAmount" placeholder="Vnesite znesek">
-
-        <div style="margin-top: 15px;">
-            <button class="btn-buy" onclick="executeTrade('Buy')">KUPI (BUY)</button>
-            <button class="btn-sell" onclick="executeTrade('Sell')">PRODAJ (SELL)</button>
-            <div class="clear"></div>
-        </div>
-
-        <div class="status" id="orderStatusBox">Naročilo: <b>Pripravljeno</b></div>
     </div>
 </div>
 
 <script>
-    // Avtomatsko zazna naslov Render strežnika ne glede na lokacijo
+    // Samodejno zazna naslov Render strežnika (deluje iz doma ali mobilnih podatkov v tujini)
     const BACKEND_URL = window.location.origin;
-    let aiLoopInterval = null;
+    let autoScanInterval = null;
 
     // 1. POVEZAVA IN PRIDOBIVANJE STANJA
     async function connectAndFetch() {
@@ -164,6 +135,9 @@
                 } else {
                     balanceTable.innerHTML = '<tr><td colspan="4" style="text-align:center;">Na računu ni najdenih sredstev z vrednostjo nad 0.</td></tr>';
                 }
+
+                // Zaženemo tiho spremljanje 5 parov v ozadju
+                startAIScanner();
             } else {
                 statusBox.style.color = '#f44336';
                 statusBox.innerHTML = `<b>Napaka:</b> ${resData.message || 'Neznana napaka'}`;
@@ -174,84 +148,75 @@
         }
     }
 
-    // 2. SAMODEJNI AI SKENER (Teka v ozadju)
+    // 2. AI SPREMLJANJE V OZADJU (Osveževanje na 4 sekunde)
     function startAIScanner() {
-        if (aiLoopInterval) clearInterval(aiLoopInterval);
+        if (autoScanInterval) clearInterval(autoScanInterval);
         runAnalysis();
-        aiLoopInterval = setInterval(runAnalysis, 5000);
+        autoScanInterval = setInterval(runAnalysis, 4000);
     }
 
     async function runAnalysis() {
         const password = document.getElementById('appPassword').value.trim();
-        const rawInput = document.getElementById('scanSymbols').value.trim();
-        const rawSymbols = rawInput ? rawInput.split(',').map(s => s.trim()) : [];
-        const interval = document.getElementById('scanInterval').value;
-        const totalAmount = document.getElementById('totalBudget').value;
+        const totalAmount = document.getElementById('totalBudget').value || 26;
         const container = document.getElementById('aiSignalsContainer');
+
+        if (!password) return;
 
         try {
             const res = await fetch(`${BACKEND_URL}/api/analyze`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ password, symbols: rawSymbols, interval, totalAmount })
+                body: JSON.stringify({ password, totalAmount })
             });
 
             const data = await res.json();
             if (data.status === 'success' && data.data) {
                 container.innerHTML = '';
                 const items = data.data.items || [];
-                const perSymbol = data.data.amountPerSymbol || 0;
+                const perSymbol = data.data.amountPerSymbol || (totalAmount / 5).toFixed(2);
 
                 items.forEach(item => {
-                    if (!item.ok) return;
-                    
                     const sig = item.signal || 'HOLD';
-                    const score = item.score || 0;
-                    const price = parseFloat(item.lastPrice).toFixed(4);
+                    const price = parseFloat(item.lastPrice || item.price || 0).toFixed(4);
                     const reasons = (item.reasons || []).join(' | ');
 
                     container.innerHTML += `
                         <div class="signal-card signal-${sig}">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
                                 <div>
-                                    <b>${item.symbol}</b> - Cena: <b>${price}</b>
-                                    <span style="font-size: 11px; color: #aaa; margin-left: 8px;">(Razdeljeno: ${perSymbol} €)</span>
+                                    <b style="font-size: 16px;">${item.symbol}</b> 
+                                    <span style="font-size: 13px; color: #aaa; margin-left: 8px;">Cena: <b>$${price}</b></span>
+                                    <br>
+                                    <span style="font-size: 11px; color: #888;">Predviden znesek: ${perSymbol} € / par</span>
                                 </div>
                                 <div>
-                                    <span class="badge badge-${sig}">${sig} (Score: ${score})</span>
+                                    <span class="badge badge-${sig}">${sig}</span>
                                 </div>
                             </div>
-                            <div style="font-size: 11px; color: #ccc; margin-top: 6px;">
-                                Kazalniki: ${reasons}
+                            
+                            <div style="font-size: 11px; color: #ccc; margin: 8px 0;">
+                                AI Razlogi: ${reasons}
+                            </div>
+
+                            <div style="margin-top: 10px;">
+                                <button class="btn-buy" onclick="executeTrade('${item.symbol}', 'Buy', '${perSymbol}')">KUPI (BUY)</button>
+                                <button class="btn-sell" onclick="executeTrade('${item.symbol}', 'Sell', '${perSymbol}')">PRODAJ (SELL)</button>
+                                <div class="clear"></div>
                             </div>
                         </div>
                     `;
                 });
             }
         } catch (err) {
-            console.log('AI skener napaka v ozadju:', err.message);
+            console.log('Spremljanje v ozadju:', err.message);
         }
     }
 
-    // 3. HITRO TRGOVANJE
-    async function executeTrade(side) {
+    // 3. IZVEDBA TRGOVANJA (KUPI / PRODAJ KO VIDITE PLUS)
+    async function executeTrade(symbol, side, amount) {
         const password = document.getElementById('appPassword').value.trim();
-        const symbol = document.getElementById('tradeSymbol').value.trim().toUpperCase();
-        const amount = document.getElementById('tradeAmount').value.trim();
-        const orderStatusBox = document.getElementById('orderStatusBox');
 
-        if (!password) {
-            alert('Vnesite geslo aplikacije zgoraj!');
-            return;
-        }
-
-        if (!symbol || !amount || parseFloat(amount) <= 0) {
-            alert('Vnesite veljaven trgovalni par in znesek!');
-            return;
-        }
-
-        orderStatusBox.style.color = '#ffffff';
-        orderStatusBox.innerHTML = `Pošiljam ${side} naročilo za ${amount} na ${symbol}...`;
+        if (!confirm(`Ali potrjujete ${side} naročilo za ${symbol} v znesku ${amount} €?`)) return;
 
         try {
             const res = await fetch(`${BACKEND_URL}/api/trade`, {
@@ -262,24 +227,16 @@
 
             const data = await res.json();
 
-            if (data.status === 'success') {
-                orderStatusBox.style.color = '#4CAF50';
-                orderStatusBox.innerHTML = `<b>Naročilo USPEŠNO!</b> (${side} ${symbol})`;
-                setTimeout(connectAndFetch, 1200);
+            if (data.status === 'success' || data.code === 0) {
+                alert(`Naročilo USPEŠNO izvedeno! (${side} ${symbol})`);
+                connectAndFetch();
             } else {
-                orderStatusBox.style.color = '#f44336';
-                orderStatusBox.innerHTML = `<b>Napaka pri naročilu (${data.code}):</b> ${data.message}`;
+                alert(`Napaka pri naročilu (${data.code}): ${data.message}`);
             }
         } catch (err) {
-            orderStatusBox.style.color = '#f44336';
-            orderStatusBox.innerHTML = `<b>Lokalna napaka:</b> ${err.message}`;
+            alert(`Napaka pri povezavi: ${err.message}`);
         }
     }
-
-    // Zagon skenerja samodejno ob nalaganju strani
-    document.addEventListener('DOMContentLoaded', () => {
-        startAIScanner();
-    });
 </script>
 
 </body>
