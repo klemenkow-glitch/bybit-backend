@@ -19,6 +19,7 @@
         .btn-buy:hover { background-color: #45a049; }
         .btn-sell { background-color: #f44336; color: #fff; width: 48%; float: right; }
         .btn-sell:hover { background-color: #da190b; }
+        .btn-disabled { background-color: #444 !important; color: #888 !important; cursor: not-allowed !important; }
         .clear { clear: both; }
         .status { margin-top: 15px; padding: 12px; border-radius: 4px; background: #2b2b30; word-break: break-all; font-size: 13px; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
@@ -32,6 +33,7 @@
         .badge-BUY { background: #4CAF50; color: #fff; }
         .badge-SELL { background: #f44336; color: #fff; }
         .badge-HOLD { background: #f7a600; color: #000; }
+        .owned-tag { font-size: 11px; background: #2e7d32; color: #fff; padding: 2px 6px; border-radius: 3px; margin-left: 5px; }
     </style>
 </head>
 <body>
@@ -43,7 +45,7 @@
         <label>Geslo aplikacije (APP_PASSWORD):</label>
         <input type="password" id="appPassword" placeholder="Vnesite geslo aplikacije">
 
-        <label>Znesek za posamezen nakup (€/$):</label>
+        <label>Znesek za trgovanje (€/$):</label>
         <input type="number" id="totalBudget" value="26" placeholder="Vnesite znesek">
 
         <button class="btn-connect" onclick="connectAndFetch()">Poveži in Osveži Stanje</button>
@@ -165,15 +167,16 @@
                     const sig = item.signal || 'HOLD';
                     const price = parseFloat(item.lastPrice || 0).toFixed(4);
                     const reasons = (item.reasons || []).join(' | ');
+                    const isOwned = item.isOwned;
+                    const heldText = isOwned ? `<span class="owned-tag">ODPRTA POZICIJA (${item.heldAmount.toFixed(4)} ${item.baseCoin})</span>` : '';
 
                     container.innerHTML += `
                         <div class="signal-card signal-${sig}">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
                                 <div>
-                                    <b style="font-size: 16px;">${item.symbol}</b> 
-                                    <span style="font-size: 13px; color: #aaa; margin-left: 8px;">Cena: <b>$${price}</b></span>
+                                    <b style="font-size: 16px;">${item.symbol}</b> ${heldText}
                                     <br>
-                                    <span style="font-size: 11px; color: #888;">Znesek ob nakupu: ${fullAmt} €</span>
+                                    <span style="font-size: 13px; color: #aaa;">Cena: <b>$${price}</b></span>
                                 </div>
                                 <div>
                                     <span class="badge badge-${sig}">${sig}</span>
@@ -181,12 +184,16 @@
                             </div>
                             
                             <div style="font-size: 11px; color: #ccc; margin: 8px 0;">
-                                Kazalniki: ${reasons}
+                                AI Kazalniki: ${reasons}
                             </div>
 
                             <div style="margin-top: 10px;">
-                                <button class="btn-buy" onclick="executeTrade('${item.symbol}', 'Buy', '${fullAmt}')">KUPI (BUY)</button>
-                                <button class="btn-sell" onclick="executeTrade('${item.symbol}', 'Sell', '${fullAmt}')">PRODAJ (SELL)</button>
+                                <button class="btn-buy" onclick="executeTrade('${item.symbol}', 'Buy', '${fullAmt}')">KUPI (${fullAmt} €)</button>
+                                
+                                ${isOwned 
+                                    ? `<button class="btn-sell" onclick="executeTrade('${item.symbol}', 'Sell', '${fullAmt}')">ZAPRI (PRODAJ VSE)</button>`
+                                    : `<button class="btn-sell btn-disabled" onclick="alert('Za prodajo morate najprej kupiti ta kovanec z gumbom KUPI!')">PRODAJ (Ni kupljeno)</button>`
+                                }
                                 <div class="clear"></div>
                             </div>
                         </div>
@@ -207,8 +214,8 @@
         }
 
         const msg = side === 'Buy' 
-            ? `Potrjujete KUPI za ${symbol} v znesku ${amount} €?` 
-            : `Potrjujete PRODAJ VSE za ${symbol}?`;
+            ? `Ali želite pretvoriti ${amount} € v ${symbol}?` 
+            : `Ali želite prodati celotno pozicijo ${symbol} in vrniti denar?`;
 
         if (!confirm(msg)) return;
 
@@ -222,7 +229,7 @@
             const data = await res.json();
 
             if (data.status === 'success' || data.code === 0) {
-                alert(`Uspešno: ${data.message || side + ' ' + symbol}`);
+                alert(`USPEŠNO: ${data.message || side + ' ' + symbol}`);
                 connectAndFetch();
             } else {
                 alert(`Bybit Napaka (${data.code}): ${data.message}`);
