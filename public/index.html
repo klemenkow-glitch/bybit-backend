@@ -71,8 +71,8 @@
     <div class="card">
         <h3>AI Skener & Signali (Real-Time)</h3>
         
-        <label>Trgovalni pari za spremljanje (do 5 parov, ločeni s vejico):</label>
-        <input type="text" id="scanSymbols" value="BTCUSDT, ETHUSDT, EURUSDT, SOLUSDT, XRPUSDT">
+        <label>Trgovalni pari za spremljanje (pustite prazno za TOP 5 z Bybita):</label>
+        <input type="text" id="scanSymbols" placeholder="npr. BTCUSDT, ETHUSDT ali pustite prazno">
 
         <div style="display: flex; gap: 10px;">
             <div style="width: 50%;">
@@ -91,7 +91,7 @@
         </div>
 
         <div id="aiSignalsContainer" style="margin-top: 15px;">
-            <div style="color: #777; font-size: 13px; text-align: center;">Začetek spremljanja po uspešni povezavi...</div>
+            <div style="color: #777; font-size: 13px; text-align: center;">Nalaganje trenutnih AI signalov...</div>
         </div>
     </div>
 
@@ -116,6 +116,7 @@
 </div>
 
 <script>
+    // Avtomatsko zazna naslov Render strežnika ne glede na lokacijo
     const BACKEND_URL = window.location.origin;
     let aiLoopInterval = null;
 
@@ -163,35 +164,30 @@
                 } else {
                     balanceTable.innerHTML = '<tr><td colspan="4" style="text-align:center;">Na računu ni najdenih sredstev z vrednostjo nad 0.</td></tr>';
                 }
-
-                // Po uspešni povezavi zaženemo samodejni AI skener v ozadju
-                startAIScanner();
             } else {
                 statusBox.style.color = '#f44336';
                 statusBox.innerHTML = `<b>Napaka:</b> ${resData.message || 'Neznana napaka'}`;
             }
         } catch (err) {
             statusBox.style.color = '#f44336';
-            statusBox.innerHTML = `<b>Lokalna napaka:</b> Preverite, ali teče 'node server.js'.`;
+            statusBox.innerHTML = `<b>Lokalna napaka:</b> Preverite povezavo s Render strežnikom.`;
         }
     }
 
-    // 2. SAMODEJNI AI SKENER (Teka v ozadju na 5-10s)
+    // 2. SAMODEJNI AI SKENER (Teka v ozadju)
     function startAIScanner() {
         if (aiLoopInterval) clearInterval(aiLoopInterval);
-
-        runAnalysis(); // Izvedemo takoj
-        aiLoopInterval = setInterval(runAnalysis, 5000); // Nato ponavljamo na 5 sekund
+        runAnalysis();
+        aiLoopInterval = setInterval(runAnalysis, 5000);
     }
 
     async function runAnalysis() {
         const password = document.getElementById('appPassword').value.trim();
-        const rawSymbols = document.getElementById('scanSymbols').value.split(',').map(s => s.trim());
+        const rawInput = document.getElementById('scanSymbols').value.trim();
+        const rawSymbols = rawInput ? rawInput.split(',').map(s => s.trim()) : [];
         const interval = document.getElementById('scanInterval').value;
         const totalAmount = document.getElementById('totalBudget').value;
         const container = document.getElementById('aiSignalsContainer');
-
-        if (!password) return;
 
         try {
             const res = await fetch(`${BACKEND_URL}/api/analyze`, {
@@ -216,10 +212,10 @@
 
                     container.innerHTML += `
                         <div class="signal-card signal-${sig}">
-                            <div style="display: flex; justify-space-between; align-items: center;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
                                 <div>
                                     <b>${item.symbol}</b> - Cena: <b>${price}</b>
-                                    <span style="font-size: 11px; color: #aaa; margin-left: 8px;">(Razdeljen znesek: ${perSymbol})</span>
+                                    <span style="font-size: 11px; color: #aaa; margin-left: 8px;">(Razdeljeno: ${perSymbol} €)</span>
                                 </div>
                                 <div>
                                     <span class="badge badge-${sig}">${sig} (Score: ${score})</span>
@@ -279,6 +275,11 @@
             orderStatusBox.innerHTML = `<b>Lokalna napaka:</b> ${err.message}`;
         }
     }
+
+    // Zagon skenerja samodejno ob nalaganju strani
+    document.addEventListener('DOMContentLoaded', () => {
+        startAIScanner();
+    });
 </script>
 
 </body>
