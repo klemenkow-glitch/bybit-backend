@@ -19,7 +19,6 @@
         .btn-buy:hover { background-color: #45a049; }
         .btn-sell { background-color: #f44336; color: #fff; width: 48%; float: right; }
         .btn-sell:hover { background-color: #da190b; }
-        .btn-close { background-color: #ff9800; color: #000; width: 100%; margin-top: 6px; }
         .clear { clear: both; }
         .status { margin-top: 15px; padding: 12px; border-radius: 4px; background: #2b2b30; word-break: break-all; font-size: 13px; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
@@ -33,14 +32,11 @@
         .badge-BUY { background: #4CAF50; color: #fff; }
         .badge-SELL { background: #f44336; color: #fff; }
         .badge-HOLD { background: #f7a600; color: #000; }
-        .pnl-plus { color: #4CAF50; font-weight: bold; }
-        .pnl-minus { color: #f44336; font-weight: bold; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <!-- POVEZAVA -->
     <div class="card">
         <h2>Bybit AI Terminal (MAINNET)</h2>
         
@@ -48,14 +44,13 @@
         <input type="password" id="appPassword" placeholder="Vnesite geslo aplikacije">
 
         <label>Skupni znesek za trgovanje (€/$):</label>
-        <input type="number" id="totalBudget" value="26" placeholder="Vnesite celotni znesek">
+        <input type="number" id="totalBudget" value="26" placeholder="Vnesite znesek">
 
         <button class="btn-connect" onclick="connectAndFetch()">Poveži in Osveži Stanje</button>
 
         <div class="status" id="statusBox">Status: <b>Čakam na povezavo...</b></div>
     </div>
 
-    <!-- PREGLED SREDSTEV -->
     <div class="card">
         <h3>Vaša Sredstva na Bybitu</h3>
         <table>
@@ -73,13 +68,8 @@
         </table>
     </div>
 
-    <!-- AI SKENER & PREDELEK ZA 5 PAROV -->
     <div class="card">
         <h3>TOP 5 AI Trgovalni Signali (Real-Time)</h3>
-        <div style="font-size: 12px; color: #aaa; margin-bottom: 10px;">
-            AI spremlja kazalnike v ozadju. Ko vidite ugoden signal, ročno pritisnite KUPI ali PRODAJ.
-        </div>
-        
         <div id="aiSignalsContainer">
             <div style="color: #777; text-align: center; padding: 10px;">Vnesite geslo in kliknite Poveži...</div>
         </div>
@@ -87,11 +77,10 @@
 </div>
 
 <script>
-    // Samodejno zazna naslov Render strežnika (deluje iz doma ali mobilnih podatkov v tujini)
+    // Dinamičen naslov za Render (prepreči localhost napake)
     const BACKEND_URL = window.location.origin;
     let autoScanInterval = null;
 
-    // 1. POVEZAVA IN PRIDOBIVANJE STANJA
     async function connectAndFetch() {
         const password = document.getElementById('appPassword').value.trim();
         const statusBox = document.getElementById('statusBox');
@@ -133,22 +122,20 @@
                         `;
                     });
                 } else {
-                    balanceTable.innerHTML = '<tr><td colspan="4" style="text-align:center;">Na računu ni najdenih sredstev z vrednostjo nad 0.</td></tr>';
+                    balanceTable.innerHTML = '<tr><td colspan="4" style="text-align:center;">Na računu ni sredstev z vrednostjo nad 0.</td></tr>';
                 }
 
-                // Zaženemo tiho spremljanje 5 parov v ozadju
                 startAIScanner();
             } else {
                 statusBox.style.color = '#f44336';
-                statusBox.innerHTML = `<b>Napaka:</b> ${resData.message || 'Neznana napaka'}`;
+                statusBox.innerHTML = `<b>Napaka:</b> ${resData.message || 'Napačno geslo'}`;
             }
         } catch (err) {
             statusBox.style.color = '#f44336';
-            statusBox.innerHTML = `<b>Lokalna napaka:</b> Preverite povezavo s Render strežnikom.`;
+            statusBox.innerHTML = `<b>Lokalna napaka:</b> Preverite strežnik.`;
         }
     }
 
-    // 2. AI SPREMLJANJE V OZADJU (Osveževanje na 4 sekunde)
     function startAIScanner() {
         if (autoScanInterval) clearInterval(autoScanInterval);
         runAnalysis();
@@ -177,7 +164,7 @@
 
                 items.forEach(item => {
                     const sig = item.signal || 'HOLD';
-                    const price = parseFloat(item.lastPrice || item.price || 0).toFixed(4);
+                    const price = parseFloat(item.lastPrice || 0).toFixed(4);
                     const reasons = (item.reasons || []).join(' | ');
 
                     container.innerHTML += `
@@ -187,7 +174,7 @@
                                     <b style="font-size: 16px;">${item.symbol}</b> 
                                     <span style="font-size: 13px; color: #aaa; margin-left: 8px;">Cena: <b>$${price}</b></span>
                                     <br>
-                                    <span style="font-size: 11px; color: #888;">Predviden znesek: ${perSymbol} € / par</span>
+                                    <span style="font-size: 11px; color: #888;">Znesek za trgovanje: ${perSymbol} €</span>
                                 </div>
                                 <div>
                                     <span class="badge badge-${sig}">${sig}</span>
@@ -195,7 +182,7 @@
                             </div>
                             
                             <div style="font-size: 11px; color: #ccc; margin: 8px 0;">
-                                AI Razlogi: ${reasons}
+                                Kazalniki: ${reasons}
                             </div>
 
                             <div style="margin-top: 10px;">
@@ -208,15 +195,20 @@
                 });
             }
         } catch (err) {
-            console.log('Spremljanje v ozadju:', err.message);
+            console.log('Spremljanje:', err.message);
         }
     }
 
-    // 3. IZVEDBA TRGOVANJA (KUPI / PRODAJ KO VIDITE PLUS)
+    // NAKUP IN PRODAJA Z VARNO OBRAVNAVO JSON ODGOVOROV
     async function executeTrade(symbol, side, amount) {
         const password = document.getElementById('appPassword').value.trim();
 
-        if (!confirm(`Ali potrjujete ${side} naročilo za ${symbol} v znesku ${amount} €?`)) return;
+        if (!password) {
+            alert('Vnesite geslo aplikacije zgoraj!');
+            return;
+        }
+
+        if (!confirm(`Potrjujete ${side} naročilo za ${symbol} v znesku ${amount} €?`)) return;
 
         try {
             const res = await fetch(`${BACKEND_URL}/api/trade`, {
@@ -225,16 +217,24 @@
                 body: JSON.stringify({ password, symbol, side, amount })
             });
 
+            // Varno preverjanje odgovora preden ga pretvorimo v JSON
+            const contentType = res.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                const text = await res.text();
+                alert(`Napaka strežnika (HTTP ${res.status}): Preverite, ali je pot /api/trade vpisana v server.js.`);
+                return;
+            }
+
             const data = await res.json();
 
             if (data.status === 'success' || data.code === 0) {
                 alert(`Naročilo USPEŠNO izvedeno! (${side} ${symbol})`);
                 connectAndFetch();
             } else {
-                alert(`Napaka pri naročilu (${data.code}): ${data.message}`);
+                alert(`Bybit Napaka (${data.code}): ${data.message}`);
             }
         } catch (err) {
-            alert(`Napaka pri povezavi: ${err.message}`);
+            alert(`Lokalna napaka pri povezavi: ${err.message}`);
         }
     }
 </script>
