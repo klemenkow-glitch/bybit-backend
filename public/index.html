@@ -19,7 +19,7 @@
         .btn-buy:hover { background-color: #45a049; }
         .btn-sell { background-color: #f44336; color: #fff; width: 48%; float: right; }
         .btn-sell:hover { background-color: #da190b; }
-        .btn-close { background-color: #ff9800; color: #000; width: 100%; margin-top: 6px; }
+        .btn-close { background-color: #ff9800; color: #000; width: 100%; margin-top: 10px; font-size: 15px; }
         .clear { clear: both; }
         .status { margin-top: 15px; padding: 12px; border-radius: 4px; background: #2b2b30; word-break: break-all; font-size: 13px; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
@@ -33,7 +33,9 @@
         .badge-BUY { background: #4CAF50; color: #fff; }
         .badge-SELL { background: #f44336; color: #fff; }
         .badge-HOLD { background: #f7a600; color: #000; }
-        .pos-badge { font-size: 11px; background: #2196F3; color: #fff; padding: 2px 6px; border-radius: 3px; margin-left: 5px; }
+        .pos-badge { font-size: 12px; background: #2196F3; color: #fff; padding: 3px 6px; border-radius: 3px; font-weight: bold; }
+        .pnl-plus { color: #4CAF50; font-weight: bold; }
+        .pnl-minus { color: #f44336; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -46,7 +48,7 @@
         <input type="password" id="appPassword" placeholder="Vnesite geslo aplikacije">
 
         <label>Znesek za posamezen trade (€/$):</label>
-        <input type="number" id="totalBudget" value="26" placeholder="Vnesite znesek">
+        <input type="number" id="totalBudget" value="25" placeholder="Vnesite znesek">
 
         <button class="btn-connect" onclick="connectAndFetch()">Poveži in Osveži Stanje</button>
 
@@ -140,12 +142,12 @@
     function startAIScanner() {
         if (autoScanInterval) clearInterval(autoScanInterval);
         runAnalysis();
-        autoScanInterval = setInterval(runAnalysis, 4000);
+        autoScanInterval = setInterval(runAnalysis, 3000);
     }
 
     async function runAnalysis() {
         const password = document.getElementById('appPassword').value.trim();
-        const totalAmount = document.getElementById('totalBudget').value || 26;
+        const totalAmount = document.getElementById('totalBudget').value || 25;
         const container = document.getElementById('aiSignalsContainer');
 
         if (!password) return;
@@ -168,7 +170,10 @@
                     const price = parseFloat(item.lastPrice || 0).toFixed(4);
                     const reasons = (item.reasons || []).join(' | ');
                     const hasPos = item.hasPosition;
-                    const posInfo = hasPos ? `<span class="pos-badge">ODPRTO: ${item.positionSide} (PnL: $${item.pnl})</span>` : '';
+                    
+                    const pnlVal = parseFloat(item.pnl || 0);
+                    const pnlClass = pnlVal >= 0 ? 'pnl-plus' : 'pnl-minus';
+                    const posInfo = hasPos ? `<span class="pos-badge">ODPRTO: ${item.positionSide} (<span class="${pnlClass}">$${pnlVal.toFixed(2)}</span>)</span>` : '';
 
                     container.innerHTML += `
                         <div class="signal-card signal-${sig}">
@@ -188,11 +193,11 @@
                             </div>
 
                             <div style="margin-top: 10px;">
-                                <button class="btn-buy" onclick="executeTrade('${item.symbol}', 'Buy', '${fullAmt}', 'open')">KUPI / LONG (${fullAmt} €)</button>
-                                <button class="btn-sell" onclick="executeTrade('${item.symbol}', 'Sell', '${fullAmt}', 'open')">PRODAJ / SHORT (${fullAmt} €)</button>
+                                <button class="btn-buy" onclick="executeTrade('${item.symbol}', 'Buy', '${fullAmt}', 'open')">KUPI (BUY)</button>
+                                <button class="btn-sell" onclick="executeTrade('${item.symbol}', 'Sell', '${fullAmt}', 'open')">PRODAJ (SELL)</button>
                                 <div class="clear"></div>
                                 
-                                ${hasPos ? `<button class="btn-close" onclick="executeTrade('${item.symbol}', 'Buy', '0', 'close')">ZAPRI POZICIJO (Zajemi dobiček/izgubo)</button>` : ''}
+                                ${hasPos ? `<button class="btn-close" onclick="executeTrade('${item.symbol}', 'Buy', '0', 'close')">ZAPRI POZICIJO (Vzemite Profit/Izgubo)</button>` : ''}
                             </div>
                         </div>
                     `;
@@ -211,9 +216,9 @@
             return;
         }
 
-        const msg = action === 'close'
-            ? `Ali želite ZAPRETI pozicijo za ${symbol}?`
-            : `Ali želite odpreti ${side === 'Buy' ? 'LONG (na rast)' : 'SHORT (na padec)'} trade za ${symbol} v znesku ${amount} €?`;
+        const msg = action === 'close' 
+            ? `Želite ZAPRETI pozicijo za ${symbol} in vzeti dobiček?` 
+            : `Potrjujete odpiranje pozicije ${side === 'Buy' ? 'KUPI (BUY)' : 'PRODAJ (SELL)'} za ${symbol} v znesku ${amount} €?`;
 
         if (!confirm(msg)) return;
 
