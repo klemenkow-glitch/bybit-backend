@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bybit AI Trading Terminal (MAINNET)</title>
+    <title>Bybit AI Terminal (MAINNET)</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121214; color: #ffffff; padding: 20px; margin: 0; }
         .container { max-width: 650px; margin: auto; }
@@ -43,7 +43,7 @@
         <label>Geslo aplikacije (APP_PASSWORD):</label>
         <input type="password" id="appPassword" placeholder="Vnesite geslo aplikacije">
 
-        <label>Skupni znesek za trgovanje (€/$):</label>
+        <label>Znesek za posamezen nakup (€/$):</label>
         <input type="number" id="totalBudget" value="26" placeholder="Vnesite znesek">
 
         <button class="btn-connect" onclick="connectAndFetch()">Poveži in Osveži Stanje</button>
@@ -159,7 +159,7 @@
             if (data.status === 'success' && data.data) {
                 container.innerHTML = '';
                 const items = data.data.items || [];
-                const perSymbol = data.data.amountPerSymbol || (totalAmount / 5).toFixed(2);
+                const fullAmt = data.data.fullAmount || totalAmount;
 
                 items.forEach(item => {
                     const sig = item.signal || 'HOLD';
@@ -173,7 +173,7 @@
                                     <b style="font-size: 16px;">${item.symbol}</b> 
                                     <span style="font-size: 13px; color: #aaa; margin-left: 8px;">Cena: <b>$${price}</b></span>
                                     <br>
-                                    <span style="font-size: 11px; color: #888;">Znesek za trgovanje: ${perSymbol} €</span>
+                                    <span style="font-size: 11px; color: #888;">Znesek ob nakupu: ${fullAmt} €</span>
                                 </div>
                                 <div>
                                     <span class="badge badge-${sig}">${sig}</span>
@@ -185,8 +185,8 @@
                             </div>
 
                             <div style="margin-top: 10px;">
-                                <button class="btn-buy" onclick="executeTrade('${item.symbol}', 'Buy', '${perSymbol}')">KUPI (BUY)</button>
-                                <button class="btn-sell" onclick="executeTrade('${item.symbol}', 'Sell', '${perSymbol}')">PRODAJ (SELL)</button>
+                                <button class="btn-buy" onclick="executeTrade('${item.symbol}', 'Buy', '${fullAmt}')">KUPI (BUY)</button>
+                                <button class="btn-sell" onclick="executeTrade('${item.symbol}', 'Sell', '${fullAmt}')">PRODAJ (SELL)</button>
                                 <div class="clear"></div>
                             </div>
                         </div>
@@ -206,7 +206,11 @@
             return;
         }
 
-        if (!confirm(`Potrjujete ${side} naročilo za ${symbol} v znesku ${amount} €?`)) return;
+        const msg = side === 'Buy' 
+            ? `Potrjujete KUPI za ${symbol} v znesku ${amount} €?` 
+            : `Potrjujete PRODAJ VSE za ${symbol}?`;
+
+        if (!confirm(msg)) return;
 
         try {
             const res = await fetch(`${BACKEND_URL}/api/trade`, {
@@ -215,16 +219,10 @@
                 body: JSON.stringify({ password, symbol, side, amount })
             });
 
-            const contentType = res.headers.get('content-type');
-            if (!contentType || !contentType.includes('application/json')) {
-                alert(`Napaka strežnika (HTTP ${res.status}): Preverite delovanje Render strežnika.`);
-                return;
-            }
-
             const data = await res.json();
 
             if (data.status === 'success' || data.code === 0) {
-                alert(`Naročilo USPEŠNO izvedeno! (${side} ${symbol})`);
+                alert(`Uspešno: ${data.message || side + ' ' + symbol}`);
                 connectAndFetch();
             } else {
                 alert(`Bybit Napaka (${data.code}): ${data.message}`);
