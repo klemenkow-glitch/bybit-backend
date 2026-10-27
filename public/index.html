@@ -160,9 +160,9 @@
             });
 
             const data = await res.json();
-            if (data.status === 'success' && data.data) {
+            if (data.status === 'success' && data.data && data.data.items && data.data.items.length > 0) {
                 container.innerHTML = '';
-                const items = data.data.items || [];
+                const items = data.data.items;
                 const fullAmt = data.data.fullAmount || totalAmount;
 
                 items.forEach(item => {
