@@ -25,7 +25,6 @@ const RECV_WINDOW = '10000';
 
 const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const wait = ms => new Promise(r => setTimeout(r, ms));
-const fmt8 = n => n.toFixed(8).replace(/\.?0+$/, '');
 const cleanSymbol = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 const ok = (res, data, message = 'OK') => res.json({ status: 'success', code: 0, message, data });
@@ -74,70 +73,6 @@ async function publicGet(apiPath, query = '') {
     return response.data?.retCode === 0 ? { ok: true, result: response.data.result } : { ok: false, message: response.data?.retMsg || 'Napaka API' };
 }
 
-const instCache = new Map();
-async function getInstrument(symbol) {
-    const c = instCache.get(symbol);
-    if (c && Date.now() - c.ts < 10 * 60 * 1000) return c.val;
-
-    const r = await publicGet('/v5/market/instruments-info', `category=spot&symbol=${symbol}`);
-    const item = r.ok && r.result?.list?.[0] ? r.result.list[0] : null;
-
-    if (!item) {
-        return {
-            symbol,
-            baseCoin: symbol.replace('USDT', ''),
-            quoteCoin: 'USDT',
-            basePrecision: '0.000001',
-            quotePrecision: '0.000001'
-        };
-    }
-
-    const val = {
-        symbol,
-        baseCoin: item.baseCoin,
-        quoteCoin: item.quoteCoin,
-        basePrecision: item.lotSizeFilter?.basePrecision || '0.000001',
-        quotePrecision: item.lotSizeFilter?.quotePrecision || '0.000001'
-    };
-    instCache.set(symbol, { ts: Date.now(), val });
-    return val;
-}
-
-async function loadWallet(accountType) {
-    const r = await bybit('GET', '/v5/account/wallet-balance', { query: `accountType=${accountType}` });
-    if (!r.ok) return { ok: false, coins: [] };
-    const coins = (r.result?.list?.[0]?.coin || []).map(c => ({ coin: c.coin, account: accountType, total: num(c.walletBalance), free: Math.max(0, num(c.walletBalance) - num(c.locked)) }));
-    return { ok: true, coins, totalEquity: num(r.result?.list?.[0]?.totalEquity) };
-}
-
-async function loadFunding() {
-    const r = await bybit('GET', '/v5/asset/transfer/query-account-coins-balance', { query: 'accountType=FUND' });
-    if (!r.ok) return { ok: false, coins: [] };
-    const coins = (r.result?.balance || []).map(c => ({ coin: c.coin, account: 'FUND', total: num(c.walletBalance), free: num(c.transferBalance || c.walletBalance) }));
-    return { ok: true, coins };
-}
-
-async function ensureCoin(coin, need, toAccount = 'UNIFIED') {
-    const fromAccount = toAccount === 'UNIFIED' ? 'FUND' : 'UNIFIED';
-    const toWallet = await loadWallet(toAccount);
-    const freeInTo = (toWallet.coins || []).filter(c => c.coin === coin).reduce((s, c) => s + c.free, 0);
-    const shortfall = need - freeInTo;
-    
-    if (shortfall <= 0) return true;
-
-    const fromWallet = fromAccount === 'FUND' ? await loadFunding() : await loadWallet('UNIFIED');
-    const freeInFrom = (fromWallet.coins || []).filter(c => c.coin === coin).reduce((s, c) => s + c.free, 0);
-    
-    if (freeInFrom < shortfall) return false;
-
-    const amount = fmt8(Math.min(shortfall, freeInFrom));
-    const t = await bybit('POST', '/v5/asset/transfer/inter-transfer', { 
-        body: { transferId: crypto.randomUUID(), coin, amount, fromAccountType: fromAccount, toAccountType: toAccount } 
-    });
-    await wait(600);
-    return t.ok;
-}
-
 function emaSeries(values, p) {
     const k = 2 / (p + 1); const out = [values[0]];
     for (let i = 1; i < values.length; i++) out.push(values[i] * k + out[i - 1] * (1 - k));
@@ -176,9 +111,11 @@ function analyze(candles) {
 app.post('/api/balance', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
-        const [uni, fund] = await Promise.all([loadWallet('UNIFIED'), loadFunding()]);
-        const coins = [...(uni.coins || []), ...(fund.coins || [])].filter(c => c.total > 0);
-        return ok(res, { totalEquity: uni.totalEquity || 0, coins });
+        const r = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
+        const coins = (r.result?.list?.[0]?.coin || []).map(c => ({
+            coin: c.coin, account: 'UNIFIED', total: num(c.walletBalance), free: num(c.equity)
+        }));
+        return ok(res, { totalEquity: num(r.result?.list?.[0]?.totalEquity), coins });
     } catch (err) {
         return fail(res, -500, err.message);
     }
@@ -188,35 +125,34 @@ app.post('/api/analyze', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         const totalBudget = num(req.body?.totalAmount) || 26;
-        const tickers = await publicGet('/v5/market/tickers', 'category=spot');
+        const tickers = await publicGet('/v5/market/tickers', 'category=linear');
         
         if (!tickers.ok) return fail(res, -1, 'Ni mogoče pridobiti cen');
 
         const top5 = tickers.result.list
-            .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('USDC'))
+            .filter(t => t.symbol.endsWith('USDT'))
             .sort((a, b) => parseFloat(b.turnover24h || 0) - parseFloat(a.turnover24h || 0))
             .slice(0, 5);
 
-        const [uni, fund] = await Promise.all([loadWallet('UNIFIED'), loadFunding()]);
-        const userCoins = [...(uni.coins || []), ...(fund.coins || [])];
+        // Preveri odprte pozicije na Bybit Futures
+        const posRes = await bybit('GET', '/v5/position/list', { query: 'category=linear&settleCoin=USDT' });
+        const openPositions = posRes.ok ? (posRes.result.list || []) : [];
 
         const items = await Promise.all(top5.map(async (t) => {
-            const inst = await getInstrument(t.symbol);
-            const kline = await publicGet('/v5/market/kline', `category=spot&symbol=${t.symbol}&interval=1&limit=60`);
+            const kline = await publicGet('/v5/market/kline', `category=linear&symbol=${t.symbol}&interval=1&limit=60`);
             const candles = kline.ok ? kline.result.list.slice().reverse().map(k => ({ c: num(k[4]) })) : [];
             const ai = analyze(candles);
 
-            // Preveri, ali že imamo kupljen ta kovanec
-            const heldCoin = userCoins.find(c => c.coin === inst.baseCoin);
-            const heldAmount = heldCoin ? heldCoin.free : 0;
+            const pos = openPositions.find(p => p.symbol === t.symbol && num(p.size) > 0);
 
             return {
                 symbol: t.symbol,
-                baseCoin: inst.baseCoin,
                 lastPrice: num(t.lastPrice),
                 change24h: (num(t.price24hPcnt) * 100).toFixed(2),
-                heldAmount: heldAmount,
-                isOwned: heldAmount > 0,
+                hasPosition: !!pos,
+                positionSide: pos ? pos.side : null,
+                positionSize: pos ? pos.size : 0,
+                pnl: pos ? num(pos.unrealisedPnl).toFixed(2) : 0,
                 ...ai
             };
         }));
@@ -227,56 +163,46 @@ app.post('/api/analyze', async (req, res) => {
     }
 });
 
-// TRGOVANJE: AVTOMATSKO SPREMENI VNESENI ZNESEK V IGRALNI PAR / PRODAJ VSE
+// ODPIRANJE IN ZAPIRANJE FUTURES TRADEOV (BUY / SELL SHORT)
 app.post('/api/trade', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         const symbol = cleanSymbol(req.body?.symbol);
         const side = String(req.body?.side || '');
         const amount = num(req.body?.amount);
+        const action = String(req.body?.action || 'open'); // 'open' ali 'close'
 
         if (!symbol || (side !== 'Buy' && side !== 'Sell')) {
             return fail(res, -422, 'Neveljavni podatki za naročilo.');
         }
 
-        const inst = await getInstrument(symbol);
-        const tk = await publicGet('/v5/market/tickers', `category=spot&symbol=${symbol}`);
-        const price = num(tk.result?.list?.[0]?.lastPrice);
+        const inst = await publicGet('/v5/market/instruments-info', `category=linear&symbol=${symbol}`);
+        const filter = inst.result?.list?.[0]?.lotSizeFilter;
+        const qtyStep = filter?.qtyStep || '0.001';
 
+        const tk = await publicGet('/v5/market/tickers', `category=linear&symbol=${symbol}`);
+        const price = num(tk.result?.list?.[0]?.lastPrice);
         if (!price) return fail(res, -406, 'Cene ni mogoče pridobiti.');
 
-        if (side === 'Buy') {
-            const qtyQuote = floorToStep(amount, inst.quotePrecision);
-            const hasUSDT = await ensureCoin('USDT', num(qtyQuote), 'UNIFIED');
-            if (!hasUSDT) {
-                return fail(res, -430, `Premalo USDT/EUR na računu za nakup ${symbol} v znesku ${qtyQuote} USDT.`);
-            }
-            const order = await bybit('POST', '/v5/order/create', { 
-                body: { category: 'spot', symbol, side: 'Buy', orderType: 'Market', qty: qtyQuote, marketUnit: 'quoteCoin' } 
+        if (action === 'close') {
+            // Zapri obstoječo pozicijo
+            const posRes = await bybit('GET', '/v5/position/list', { query: `category=linear&symbol=${symbol}` });
+            const pos = posRes.result?.list?.[0];
+            if (!pos || num(pos.size) <= 0) return fail(res, -404, 'Pozicija že zaprta ali ne obstaja.');
+
+            const closeSide = pos.side === 'Buy' ? 'Sell' : 'Buy';
+            const order = await bybit('POST', '/v5/order/create', {
+                body: { category: 'linear', symbol, side: closeSide, orderType: 'Market', qty: pos.size, reduceOnly: true }
             });
-            return order.ok ? ok(res, order.result, `Znesek ${qtyQuote} € USPEŠNO spremenjen v ${inst.baseCoin}!`) : fail(res, order.code, order.message);
+            return order.ok ? ok(res, order.result, `Pozicija ${symbol} uspešno zaprta!`) : fail(res, order.code, order.message);
         } else {
-            // PRODAJA: Preveri imetništvo kovanca
-            const baseCoin = inst.baseCoin;
-            const [uni, fund] = await Promise.all([loadWallet('UNIFIED'), loadFunding()]);
-            let freeUni = (uni.coins || []).filter(c => c.coin === baseCoin).reduce((s, c) => s + c.free, 0);
-            let freeFund = (fund.coins || []).filter(c => c.coin === baseCoin).reduce((s, c) => s + c.free, 0);
-            
-            let totalFree = freeUni + freeFund;
-            if (totalFree <= 0) {
-                return fail(res, -432, `Nimate še kupljenega ${baseCoin}. Za začetek pritisnite KUPI (BUY).`);
-            }
-
-            if (freeUni <= 0 && freeFund > 0) {
-                await ensureCoin(baseCoin, freeFund, 'UNIFIED');
-                freeUni = freeFund;
-            }
-
-            const qtyBase = floorToStep(freeUni, inst.basePrecision);
-            const order = await bybit('POST', '/v5/order/create', { 
-                body: { category: 'spot', symbol, side: 'Sell', orderType: 'Market', qty: qtyBase, marketUnit: 'baseCoin' } 
+            // Odpri nov LONG ali SHORT trade z vnesenim zneskom
+            const qtyBase = floorToStep(amount / price, qtyStep);
+            const order = await bybit('POST', '/v5/order/create', {
+                body: { category: 'linear', symbol, side, orderType: 'Market', qty: qtyBase }
             });
-            return order.ok ? ok(res, order.result, `Pozicija za ${symbol} zaprta! Vse spremenjeno nazaj v denar.`) : fail(res, order.code, order.message);
+            const direction = side === 'Buy' ? 'LONG (Rast)' : 'SHORT (Padec)';
+            return order.ok ? ok(res, order.result, `Trade ${direction} za ${symbol} uspešno odprt!`) : fail(res, order.code, order.message);
         }
     } catch (err) {
         return fail(res, -500, `Napaka strežnika: ${err.message}`);
