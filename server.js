@@ -5,6 +5,16 @@ const path = require('path');
 
 const app = express();
 app.set('trust proxy', 1);
+
+// CORS Nastavitve za Render
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    if (req.method === 'OPTIONS') return res.sendStatus(200);
+    next();
+});
+
 app.use(express.json({ limit: '50kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -14,7 +24,7 @@ const API_SECRET = (process.env.BYBIT_API_SECRET || '').trim();
 const APP_PASSWORD = (process.env.APP_PASSWORD || '').trim();
 const RECV_WINDOW = '10000';
 
-// ---------- POMOČNIKI ----------
+// POMOČNIKI
 const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const fmt8 = n => n.toFixed(8).replace(/\.?0+$/, '');
@@ -31,18 +41,17 @@ function floorToStep(value, step) {
     return (Math.floor(value / st + 1e-9) * st).toFixed(d);
 }
 
-// ---------- OVERJANJE GESLA ----------
 const sha = s => crypto.createHash('sha256').update(String(s)).digest();
 function checkAuth(req, res) {
     const sent = String(req.body?.password || '').trim();
     if (APP_PASSWORD.length > 0 && !crypto.timingSafeEqual(sha(sent), sha(APP_PASSWORD))) {
-        res.status(401).json({ status: 'error', code: 401, message: 'Napačno geslo.', data: null });
+        fail(res, 401, 'Napačno geslo.');
         return false;
     }
     return true;
 }
 
-// ---------- BYBIT V5 KLICI ----------
+// BYBIT KLICI
 async function bybit(method, apiPath, { query = '', body = null } = {}) {
     const timestamp = Date.now().toString();
     const bodyStr = body ? JSON.stringify(body) : '';
@@ -68,7 +77,6 @@ async function publicGet(apiPath, query = '') {
     return response.data?.retCode === 0 ? { ok: true, result: response.data.result } : { ok: false, message: response.data?.retMsg || 'Napaka API' };
 }
 
-// ---------- STANJA IN SAMODEJNI PRENOS ----------
 async function loadWallet(accountType) {
     const r = await bybit('GET', '/v5/account/wallet-balance', { query: `accountType=${accountType}` });
     if (!r.ok) return { ok: false };
@@ -96,7 +104,6 @@ async function ensureQuote(coin, need) {
     return t.ok;
 }
 
-// ---------- INDIKATORJI IN AI ANALIZA ----------
 function emaSeries(values, p) {
     const k = 2 / (p + 1); const out = [values[0]];
     for (let i = 1; i < values.length; i++) out.push(values[i] * k + out[i - 1] * (1 - k));
@@ -134,78 +141,102 @@ function analyze(candles) {
 
 // ====================== API ROUTE ======================
 
-// PRIDOBIVANJE STANJA
 app.post('/api/balance', async (req, res) => {
-    if (!checkAuth(req, res)) return;
-    const [uni, fund] = await Promise.all([loadWallet('UNIFIED'), loadFunding()]);
-    const coins = [...(uni.coins || []), ...(fund.coins || [])].filter(c => c.total > 0);
-    return ok(res, { totalEquity: uni.totalEquity || 0, coins });
-});
-
-// AI SKENER: SAMODEJNO SKENIRA TOP 5 PAROV NA BYBITU
-app.post('/api/analyze', async (req, res) => {
-    if (!checkAuth(req, res)) return;
-    const totalBudget = num(req.body?.totalAmount) || 26;
-    const tickers = await publicGet('/v5/market/tickers', 'category=spot');
-    
-    if (!tickers.ok) return fail(res, -1, 'Ni mogoče pridobiti cen z Bybita');
-
-    const top5 = tickers.result.list
-        .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('USDC'))
-        .sort((a, b) => parseFloat(b.turnover24h || 0) - parseFloat(a.turnover24h || 0))
-        .slice(0, 5);
-
-    const amountPerSymbol = (totalBudget / 5).toFixed(2);
-
-    const items = await Promise.all(top5.map(async (t) => {
-        const kline = await publicGet('/v5/market/kline', `category=spot&symbol=${t.symbol}&interval=1&limit=60`);
-        const candles = kline.ok ? kline.result.list.slice().reverse().map(k => ({ c: num(k[4]) })) : [];
-        const ai = analyze(candles);
-        return {
-            symbol: t.symbol,
-            lastPrice: num(t.lastPrice),
-            change24h: (num(t.price24hPcnt) * 100).toFixed(2),
-            ...ai
-        };
-    }));
-
-    return ok(res, { items, amountPerSymbol, ts: Date.now() });
-});
-
-// TRGOVANJE: KUPI / PRODAJ Z ENIM KLIKOM
-app.post('/api/trade', async (req, res) => {
-    if (!checkAuth(req, res)) return;
-    const symbol = cleanSymbol(req.body?.symbol);
-    const side = String(req.body?.side || '');
-    const amount = num(req.body?.amount);
-
-    const inst = await publicGet('/v5/market/instruments-info', `category=spot&symbol=${symbol}`);
-    if (!inst.ok) return fail(res, -404, 'Par ni najden');
-    
-    const filter = inst.result.list[0].lotSizeFilter;
-    const tk = await publicGet('/v5/market/tickers', `category=spot&symbol=${symbol}`);
-    const price = num(tk.result?.list?.[0]?.lastPrice);
-
-    if (side === 'Buy') {
-        const qtyQuote = floorToStep(amount, filter.quotePrecision);
-        await ensureQuote('USDT', num(qtyQuote));
-        const order = await bybit('POST', '/v5/order/create', { 
-            body: { category: 'spot', symbol, side: 'Buy', orderType: 'Market', qty: qtyQuote, marketUnit: 'quoteCoin' } 
-        });
-        return order.ok ? ok(res, order.result, `KUPLJENO ${symbol}`) : fail(res, order.code, order.message);
-    } else {
-        const uni = await loadWallet('UNIFIED');
-        const baseCoin = inst.result.list[0].baseCoin;
-        const free = (uni.coins || []).filter(c => c.coin === baseCoin).reduce((s, c) => s + c.free, 0);
-        const qtyBase = floorToStep(Math.min(free, amount / price), filter.basePrecision);
-        const order = await bybit('POST', '/v5/order/create', { 
-            body: { category: 'spot', symbol, side: 'Sell', orderType: 'Market', qty: qtyBase, marketUnit: 'baseCoin' } 
-        });
-        return order.ok ? ok(res, order.result, `PRODANO ${symbol}`) : fail(res, order.code, order.message);
+    try {
+        if (!checkAuth(req, res)) return;
+        const [uni, fund] = await Promise.all([loadWallet('UNIFIED'), loadFunding()]);
+        const coins = [...(uni.coins || []), ...(fund.coins || [])].filter(c => c.total > 0);
+        return ok(res, { totalEquity: uni.totalEquity || 0, coins });
+    } catch (err) {
+        return fail(res, -500, err.message);
     }
 });
 
-app.use('/api', (req, res) => res.status(404).json({ status: 'error', message: 'Neznana pot.' }));
+app.post('/api/analyze', async (req, res) => {
+    try {
+        if (!checkAuth(req, res)) return;
+        const totalBudget = num(req.body?.totalAmount) || 26;
+        const tickers = await publicGet('/v5/market/tickers', 'category=spot');
+        
+        if (!tickers.ok) return fail(res, -1, 'Ni mogoče pridobiti cen');
+
+        const top5 = tickers.result.list
+            .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('USDC'))
+            .sort((a, b) => parseFloat(b.turnover24h || 0) - parseFloat(a.turnover24h || 0))
+            .slice(0, 5);
+
+        const amountPerSymbol = (totalBudget / 5).toFixed(2);
+
+        const items = await Promise.all(top5.map(async (t) => {
+            const kline = await publicGet('/v5/market/kline', `category=spot&symbol=${t.symbol}&interval=1&limit=60`);
+            const candles = kline.ok ? kline.result.list.slice().reverse().map(k => ({ c: num(k[4]) })) : [];
+            const ai = analyze(candles);
+            return {
+                symbol: t.symbol,
+                lastPrice: num(t.lastPrice),
+                change24h: (num(t.price24hPcnt) * 100).toFixed(2),
+                ...ai
+            };
+        }));
+
+        return ok(res, { items, amountPerSymbol, ts: Date.now() });
+    } catch (err) {
+        return fail(res, -500, err.message);
+    }
+});
+
+// HITRO TRGOVANJE (BUY / SELL) - ZAVAROVANO PRED HTML DOCTYPE NAPAKAMI
+app.post('/api/trade', async (req, res) => {
+    try {
+        if (!checkAuth(req, res)) return;
+        const symbol = cleanSymbol(req.body?.symbol);
+        const side = String(req.body?.side || '');
+        const amount = num(req.body?.amount);
+
+        if (!symbol || (side !== 'Buy' && side !== 'Sell') || amount <= 0) {
+            return fail(res, -422, 'Neveljavni podatki za naročilo.');
+        }
+
+        const inst = await publicGet('/v5/market/instruments-info', `category=spot&symbol=${symbol}`);
+        if (!inst.ok) return fail(res, -404, 'Par ni najden na Bybit Spot.');
+        
+        const filter = inst.result.list[0].lotSizeFilter;
+        const tk = await publicGet('/v5/market/tickers', `category=spot&symbol=${symbol}`);
+        const price = num(tk.result?.list?.[0]?.lastPrice);
+
+        if (!price) return fail(res, -406, 'Cene ni mogoče pridobiti.');
+
+        if (side === 'Buy') {
+            const qtyQuote = floorToStep(amount, filter.quotePrecision);
+            await ensureQuote('USDT', num(qtyQuote));
+            const order = await bybit('POST', '/v5/order/create', { 
+                body: { category: 'spot', symbol, side: 'Buy', orderType: 'Market', qty: qtyQuote, marketUnit: 'quoteCoin' } 
+            });
+            return order.ok ? ok(res, order.result, `KUPLJENO ${symbol}`) : fail(res, order.code, order.message);
+        } else {
+            const uni = await loadWallet('UNIFIED');
+            const baseCoin = inst.result.list[0].baseCoin;
+            const free = (uni.coins || []).filter(c => c.coin === baseCoin).reduce((s, c) => s + c.free, 0);
+            
+            if (free <= 0) {
+                return fail(res, -432, `Nimate dovolj ${baseCoin} na računu za prodajo.`);
+            }
+
+            const qtyBase = floorToStep(Math.min(free, amount / price), filter.basePrecision);
+            const order = await bybit('POST', '/v5/order/create', { 
+                body: { category: 'spot', symbol, side: 'Sell', orderType: 'Market', qty: qtyBase, marketUnit: 'baseCoin' } 
+            });
+            return order.ok ? ok(res, order.result, `PRODANO ${symbol}`) : fail(res, order.code, order.message);
+        }
+    } catch (err) {
+        return fail(res, -500, `Lokalna napaka strežnika: ${err.message}`);
+    }
+});
+
+// VEDNO VRNI JSON ZA VSE NEZNANE POTI (Niti ena pot več ne vrne HTML-ja)
+app.use('*', (req, res) => {
+    res.status(404).json({ status: 'error', code: 404, message: 'Neznana API pot ali datoteka.', data: null });
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 STREŽNIK TEČE NA PORTU ${PORT}`));
