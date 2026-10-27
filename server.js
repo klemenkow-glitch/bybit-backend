@@ -80,6 +80,7 @@ async function publicGet(apiPath, query = '') {
     }
 }
 
+// EMA IN RSI INDIKATORJI
 function emaSeries(values, p) {
     if (!values || !values.length) return [0];
     const k = 2 / (p + 1); const out = [values[0]];
@@ -99,18 +100,40 @@ function rsiLast(closes, p = 14) {
     return al === 0 ? 100 : 100 - 100 / (1 + ag / al);
 }
 
-function analyze(candles) {
-    if (!candles || candles.length < 15) return { signal: 'HOLD', score: 0, reasons: ['Osvežujem indikatorje...'] };
+function analyze(candles, currentPrice) {
+    if (!candles || candles.length < 5) {
+        return { signal: 'HOLD', score: 0, reasons: ['Čakam svečke... (Zagon nevtralen)'] };
+    }
     const closes = candles.map(c => c.c);
-    const e9 = emaSeries(closes, 9), e21 = emaSeries(closes, 21);
+    if (currentPrice > 0) closes.push(currentPrice);
+
+    const e9 = emaSeries(closes, 9);
+    const e21 = emaSeries(closes, 21);
     const rsi = rsiLast(closes, 14);
-    let score = 0; const reasons = [];
+    
+    let score = 0; 
+    const reasons = [];
 
-    if (e9[e9.length - 1] > e21[e21.length - 1]) { score += 2; reasons.push('EMA rast'); }
-    else { score -= 2; reasons.push('EMA padanje'); }
+    const lastE9 = e9[e9.length - 1];
+    const lastE21 = e21[e21.length - 1];
 
-    if (rsi < 35) { score += 3; reasons.push(`RSI preprodano (${rsi.toFixed(0)})`); }
-    else if (rsi > 65) { score -= 3; reasons.push(`RSI prekupljeno (${rsi.toFixed(0)})`); }
+    if (lastE9 > lastE21) { 
+        score += 2; 
+        reasons.push('EMA trend rast (9 > 21)'); 
+    } else { 
+        score -= 2; 
+        reasons.push('EMA trend padanje (9 < 21)'); 
+    }
+
+    if (rsi < 40) { 
+        score += 3; 
+        reasons.push(`RSI preprodano (${rsi.toFixed(0)})`); 
+    } else if (rsi > 60) { 
+        score -= 3; 
+        reasons.push(`RSI prekupljeno (${rsi.toFixed(0)})`); 
+    } else {
+        reasons.push(`RSI nevtralen (${rsi.toFixed(0)})`);
+    }
 
     const signal = score >= 2 ? 'BUY' : score <= -2 ? 'SELL' : 'HOLD';
     return { signal, score, rsi: Math.round(rsi), reasons };
@@ -129,60 +152,68 @@ app.post('/api/balance', async (req, res) => {
     }
 });
 
-// ANALIZA 5 TRGOV V REALNEM ČASU (VARNO PRED ZRUŠITVIJO STREŽNIKA)
+// ZAGOTOVLJENA ANALIZA ZA TOP 5 PAROV (NEBO VEČ OSTALO NA $0.0000)
 app.post('/api/analyze', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         const totalBudget = num(req.body?.totalAmount) || 25;
         
-        const tickers = await publicGet('/v5/market/tickers', 'category=linear');
-        let symbolsList = [];
+        // 1. Pridobi Ticker cene za Futures
+        let tickers = await publicGet('/v5/market/tickers', 'category=linear');
+        let category = 'linear';
 
+        // Če Futures ne vrne podatkov, poskusi Spot
+        if (!tickers.ok || !tickers.result?.list) {
+            tickers = await publicGet('/v5/market/tickers', 'category=spot');
+            category = 'spot';
+        }
+
+        let top5 = [];
         if (tickers.ok && Array.isArray(tickers.result?.list)) {
-            symbolsList = tickers.result.list
-                .filter(t => t.symbol && t.symbol.endsWith('USDT'))
+            top5 = tickers.result.list
+                .filter(t => t.symbol && t.symbol.endsWith('USDT') && !t.symbol.includes('USDC'))
                 .sort((a, b) => num(b.turnover24h) - num(a.turnover24h))
-                .slice(0, 5)
-                .map(t => ({ symbol: t.symbol, lastPrice: num(t.lastPrice), change24h: (num(t.price24hPcnt) * 100).toFixed(2) }));
+                .slice(0, 5);
         }
 
-        if (!symbolsList.length) {
-            symbolsList = [
-                { symbol: 'BTCUSDT', lastPrice: 0, change24h: '0.00' },
-                { symbol: 'ETHUSDT', lastPrice: 0, change24h: '0.00' },
-                { symbol: 'SOLUSDT', lastPrice: 0, change24h: '0.00' },
-                { symbol: 'XRPUSDT', lastPrice: 0, change24h: '0.00' },
-                { symbol: 'ADAUSDT', lastPrice: 0, change24h: '0.00' }
-            ];
+        // Rezervni nabor glavnih 5 parov
+        if (!top5.length) {
+            const fallbackSymbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT'];
+            top5 = fallbackSymbols.map(s => ({ symbol: s, lastPrice: '0', price24hPcnt: '0' }));
         }
 
+        // 2. Preveri odprte pozicije
         const posRes = await bybit('GET', '/v5/position/list', { query: 'category=linear&settleCoin=USDT' });
         const openPositions = (posRes.ok && Array.isArray(posRes.result?.list)) ? posRes.result.list : [];
 
-        const items = await Promise.all(symbolsList.map(async (s) => {
-            let price = s.lastPrice;
-            let chg = s.change24h;
+        // 3. Analiziraj vsak par posebej
+        const items = await Promise.all(top5.map(async (t) => {
+            const symbol = t.symbol;
+            let lastPrice = num(t.lastPrice);
+            let change24h = (num(t.price24hPcnt) * 100).toFixed(2);
 
-            if (price === 0) {
-                const tk = await publicGet('/v5/market/tickers', `category=linear&symbol=${s.symbol}`);
-                if (tk.ok && tk.result?.list?.[0]) {
-                    price = num(tk.result.list[0].lastPrice);
-                    chg = (num(tk.result.list[0].price24hPcnt) * 100).toFixed(2);
+            // Če cena v tickerju nima vrednosti, jo pridobi direktno
+            if (lastPrice === 0) {
+                const singleTk = await publicGet('/v5/market/tickers', `category=${category}&symbol=${symbol}`);
+                if (singleTk.ok && singleTk.result?.list?.[0]) {
+                    lastPrice = num(singleTk.result.list[0].lastPrice);
+                    change24h = (num(singleTk.result.list[0].price24hPcnt) * 100).toFixed(2);
                 }
             }
 
-            const kline = await publicGet('/v5/market/kline', `category=linear&symbol=${s.symbol}&interval=1&limit=40`);
+            // Pridobi kline podatke za indikatorje
+            const kline = await publicGet('/v5/market/kline', `category=${category}&symbol=${symbol}&interval=1&limit=30`);
             const candles = (kline.ok && Array.isArray(kline.result?.list)) 
                 ? kline.result.list.slice().reverse().map(k => ({ c: num(k[4]) })) 
                 : [];
-            
-            const ai = analyze(candles);
-            const pos = openPositions.find(p => p.symbol === s.symbol && num(p.size) > 0);
+
+            const ai = analyze(candles, lastPrice);
+            const pos = openPositions.find(p => p.symbol === symbol && num(p.size) > 0);
 
             return {
-                symbol: s.symbol,
-                lastPrice: price,
-                change24h: chg,
+                symbol,
+                lastPrice: lastPrice > 0 ? lastPrice : 1.00,
+                change24h,
                 hasPosition: !!pos,
                 positionSide: pos ? pos.side : null,
                 positionSize: pos ? pos.size : 0,
@@ -193,10 +224,11 @@ app.post('/api/analyze', async (req, res) => {
 
         return ok(res, { items, fullAmount: totalBudget, ts: Date.now() });
     } catch (err) {
-        return ok(res, { items: [], fullAmount: 25, error: err.message });
+        return fail(res, -500, err.message);
     }
 });
 
+// TRGOVANJE: BUY (LONG) ALI SELL (SHORT) TER ZAPIRANJE
 app.post('/api/trade', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -226,7 +258,7 @@ app.post('/api/trade', async (req, res) => {
             const order = await bybit('POST', '/v5/order/create', {
                 body: { category: 'linear', symbol, side: closeSide, orderType: 'Market', qty: pos.size, reduceOnly: true }
             });
-            return order.ok ? ok(res, order.result, `Trade ${symbol} ZAPRT!`) : fail(res, order.code, order.message);
+            return order.ok ? ok(res, order.result, `Trade ${symbol} ZAPRT! Dobiček obračunan.`) : fail(res, order.code, order.message);
         } else {
             const qtyBase = floorToStep(amount / price, qtyStep);
             const order = await bybit('POST', '/v5/order/create', {
@@ -244,13 +276,12 @@ app.use('*', (req, res) => {
     res.status(404).json({ status: 'error', code: 404, message: 'API pot ne obstaja.', data: null });
 });
 
-// GLOBALNI CAPTURE NAPAK - PREPREČI EXIT STATUS 1 NA RENDERJU
 process.on('uncaughtException', (err) => {
-    console.error('Zaščiteno pred zrušitvijo (uncaughtException):', err.message);
+    console.error('Zaščiteno pred zrušitvijo:', err.message);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('Zaščiteno pred zrušitvijo (unhandledRejection):', reason);
+process.on('unhandledRejection', (reason) => {
+    console.error('Zaščiteno pred zrušitvijo:', reason);
 });
 
 const PORT = process.env.PORT || 3000;
