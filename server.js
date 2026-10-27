@@ -6,7 +6,6 @@ const path = require('path');
 const app = express();
 app.set('trust proxy', 1);
 
-// CORS nastavitve
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
@@ -24,7 +23,6 @@ const API_SECRET = (process.env.BYBIT_API_SECRET || '').trim();
 const APP_PASSWORD = (process.env.APP_PASSWORD || '').trim();
 const RECV_WINDOW = '10000';
 
-// ---------- POMOČNIKI ----------
 const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const fmt8 = n => n.toFixed(8).replace(/\.?0+$/, '');
@@ -41,7 +39,6 @@ function floorToStep(value, step) {
     return (Math.floor(value / st + 1e-9) * st).toFixed(d);
 }
 
-// ---------- OVERJANJE GESLA ----------
 const sha = s => crypto.createHash('sha256').update(String(s)).digest();
 function checkAuth(req, res) {
     const sent = String(req.body?.password || '').trim();
@@ -52,7 +49,6 @@ function checkAuth(req, res) {
     return true;
 }
 
-// ---------- BYBIT KLICI ----------
 async function bybit(method, apiPath, { query = '', body = null } = {}) {
     const timestamp = Date.now().toString();
     const bodyStr = body ? JSON.stringify(body) : '';
@@ -78,7 +74,6 @@ async function publicGet(apiPath, query = '') {
     return response.data?.retCode === 0 ? { ok: true, result: response.data.result } : { ok: false, message: response.data?.retMsg || 'Napaka API' };
 }
 
-// VARNO PRIDOBIVANJE PODATKOV O PARU (VARNO PRED lotSizeFilter UNDEFINED)
 const instCache = new Map();
 async function getInstrument(symbol) {
     const c = instCache.get(symbol);
@@ -108,7 +103,6 @@ async function getInstrument(symbol) {
     return val;
 }
 
-// ---------- STANJA IN PRENOS ----------
 async function loadWallet(accountType) {
     const r = await bybit('GET', '/v5/account/wallet-balance', { query: `accountType=${accountType}` });
     if (!r.ok) return { ok: false, coins: [] };
@@ -144,7 +138,6 @@ async function ensureCoin(coin, need, toAccount = 'UNIFIED') {
     return t.ok;
 }
 
-// ---------- INDIKATORJI ----------
 function emaSeries(values, p) {
     const k = 2 / (p + 1); const out = [values[0]];
     for (let i = 1; i < values.length; i++) out.push(values[i] * k + out[i - 1] * (1 - k));
@@ -180,8 +173,6 @@ function analyze(candles) {
     return { signal, score, rsi: Math.round(rsi), reasons };
 }
 
-// ====================== API ROUTE ======================
-
 app.post('/api/balance', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -206,8 +197,6 @@ app.post('/api/analyze', async (req, res) => {
             .sort((a, b) => parseFloat(b.turnover24h || 0) - parseFloat(a.turnover24h || 0))
             .slice(0, 5);
 
-        const amountPerSymbol = (totalBudget / 5).toFixed(2);
-
         const items = await Promise.all(top5.map(async (t) => {
             const kline = await publicGet('/v5/market/kline', `category=spot&symbol=${t.symbol}&interval=1&limit=60`);
             const candles = kline.ok ? kline.result.list.slice().reverse().map(k => ({ c: num(k[4]) })) : [];
@@ -220,13 +209,13 @@ app.post('/api/analyze', async (req, res) => {
             };
         }));
 
-        return ok(res, { items, amountPerSymbol, ts: Date.now() });
+        return ok(res, { items, fullAmount: totalBudget, ts: Date.now() });
     } catch (err) {
         return fail(res, -500, err.message);
     }
 });
 
-// HITRO TRGOVANJE - POTPOVOLNO VAROVANO PRED `lotSizeFilter` NAPAKAMI
+// HITRO TRGOVANJE - BREZ DELITVE ZNESKA IN Z AVTOMATSKIM PREVERJANJEM KOVANCEV
 app.post('/api/trade', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -234,7 +223,7 @@ app.post('/api/trade', async (req, res) => {
         const side = String(req.body?.side || '');
         const amount = num(req.body?.amount);
 
-        if (!symbol || (side !== 'Buy' && side !== 'Sell') || amount <= 0) {
+        if (!symbol || (side !== 'Buy' && side !== 'Sell')) {
             return fail(res, -422, 'Neveljavni podatki za naročilo.');
         }
 
@@ -250,9 +239,9 @@ app.post('/api/trade', async (req, res) => {
             const order = await bybit('POST', '/v5/order/create', { 
                 body: { category: 'spot', symbol, side: 'Buy', orderType: 'Market', qty: qtyQuote, marketUnit: 'quoteCoin' } 
             });
-            return order.ok ? ok(res, order.result, `KUPLJENO ${symbol}`) : fail(res, order.code, order.message);
+            return order.ok ? ok(res, order.result, `KUPLJENO ${symbol} za $${qtyQuote}`) : fail(res, order.code, order.message);
         } else {
-            // PRODAJA: Preveri prosta sredstva na UNIFIED in FUNDING
+            // PRODAJA: Preveri celotno razpoložljivo stanje za ta kovanec
             const baseCoin = inst.baseCoin;
             const [uni, fund] = await Promise.all([loadWallet('UNIFIED'), loadFunding()]);
             let freeUni = (uni.coins || []).filter(c => c.coin === baseCoin).reduce((s, c) => s + c.free, 0);
@@ -260,27 +249,26 @@ app.post('/api/trade', async (req, res) => {
             
             let totalFree = freeUni + freeFund;
             if (totalFree <= 0) {
-                return fail(res, -432, `Nimate ${baseCoin} na računu za prodajo.`);
+                return fail(res, -432, `Nimate ${baseCoin} na računu za prodajo (kupite ga najprej ali osvežite stanje).`);
             }
 
-            // Če so kovaneci na FUNDING računu, jih samodejno prenesemo na UNIFIED
             if (freeUni <= 0 && freeFund > 0) {
                 await ensureCoin(baseCoin, freeFund, 'UNIFIED');
                 freeUni = freeFund;
             }
 
-            const qtyBase = floorToStep(Math.min(freeUni, amount / price), inst.basePrecision);
+            // Proda celotno prosto količino tega kovanca
+            const qtyBase = floorToStep(freeUni, inst.basePrecision);
             const order = await bybit('POST', '/v5/order/create', { 
                 body: { category: 'spot', symbol, side: 'Sell', orderType: 'Market', qty: qtyBase, marketUnit: 'baseCoin' } 
             });
-            return order.ok ? ok(res, order.result, `PRODANO ${symbol}`) : fail(res, order.code, order.message);
+            return order.ok ? ok(res, order.result, `PRODANO VSE (${qtyBase} ${baseCoin})`) : fail(res, order.code, order.message);
         }
     } catch (err) {
-        return fail(res, -500, `Lokalna napaka strežnika: ${err.message}`);
+        return fail(res, -500, `Napaka strežnika: ${err.message}`);
     }
 });
 
-// VAROVALO PRED DOCTYPE / HTML NAPAKAMI
 app.use('*', (req, res) => {
     res.status(404).json({ status: 'error', code: 404, message: 'API pot ne obstaja.', data: null });
 });
