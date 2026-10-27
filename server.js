@@ -24,7 +24,6 @@ const APP_PASSWORD = (process.env.APP_PASSWORD || '').trim();
 const RECV_WINDOW = '10000';
 
 const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
-const wait = ms => new Promise(r => setTimeout(r, ms));
 const cleanSymbol = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 const ok = (res, data, message = 'OK') => res.json({ status: 'success', code: 0, message, data });
@@ -121,10 +120,11 @@ app.post('/api/balance', async (req, res) => {
     }
 });
 
+// ANALIZA 5 TRGOV IN PREVERJANJE ODPRTIH TRADE-OV
 app.post('/api/analyze', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
-        const totalBudget = num(req.body?.totalAmount) || 26;
+        const totalBudget = num(req.body?.totalAmount) || 25;
         const tickers = await publicGet('/v5/market/tickers', 'category=linear');
         
         if (!tickers.ok) return fail(res, -1, 'Ni mogoče pridobiti cen');
@@ -134,7 +134,6 @@ app.post('/api/analyze', async (req, res) => {
             .sort((a, b) => parseFloat(b.turnover24h || 0) - parseFloat(a.turnover24h || 0))
             .slice(0, 5);
 
-        // Preveri odprte pozicije na Bybit Futures
         const posRes = await bybit('GET', '/v5/position/list', { query: 'category=linear&settleCoin=USDT' });
         const openPositions = posRes.ok ? (posRes.result.list || []) : [];
 
@@ -163,14 +162,14 @@ app.post('/api/analyze', async (req, res) => {
     }
 });
 
-// ODPIRANJE IN ZAPIRANJE FUTURES TRADEOV (BUY / SELL SHORT)
+// ODPIRANJE (BUY/SELL) IN ZAPIRANJE TRADE-A
 app.post('/api/trade', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         const symbol = cleanSymbol(req.body?.symbol);
         const side = String(req.body?.side || '');
         const amount = num(req.body?.amount);
-        const action = String(req.body?.action || 'open'); // 'open' ali 'close'
+        const action = String(req.body?.action || 'open');
 
         if (!symbol || (side !== 'Buy' && side !== 'Sell')) {
             return fail(res, -422, 'Neveljavni podatki za naročilo.');
@@ -185,24 +184,22 @@ app.post('/api/trade', async (req, res) => {
         if (!price) return fail(res, -406, 'Cene ni mogoče pridobiti.');
 
         if (action === 'close') {
-            // Zapri obstoječo pozicijo
             const posRes = await bybit('GET', '/v5/position/list', { query: `category=linear&symbol=${symbol}` });
             const pos = posRes.result?.list?.[0];
-            if (!pos || num(pos.size) <= 0) return fail(res, -404, 'Pozicija že zaprta ali ne obstaja.');
+            if (!pos || num(pos.size) <= 0) return fail(res, -404, 'Pozicija ne obstaja ali je že zaprta.');
 
             const closeSide = pos.side === 'Buy' ? 'Sell' : 'Buy';
             const order = await bybit('POST', '/v5/order/create', {
                 body: { category: 'linear', symbol, side: closeSide, orderType: 'Market', qty: pos.size, reduceOnly: true }
             });
-            return order.ok ? ok(res, order.result, `Pozicija ${symbol} uspešno zaprta!`) : fail(res, order.code, order.message);
+            return order.ok ? ok(res, order.result, `Trade ${symbol} ZAPRT! Dobiček/izguba obračunana.`) : fail(res, order.code, order.message);
         } else {
-            // Odpri nov LONG ali SHORT trade z vnesenim zneskom
             const qtyBase = floorToStep(amount / price, qtyStep);
             const order = await bybit('POST', '/v5/order/create', {
                 body: { category: 'linear', symbol, side, orderType: 'Market', qty: qtyBase }
             });
-            const direction = side === 'Buy' ? 'LONG (Rast)' : 'SHORT (Padec)';
-            return order.ok ? ok(res, order.result, `Trade ${direction} za ${symbol} uspešno odprt!`) : fail(res, order.code, order.message);
+            const tip = side === 'Buy' ? 'BUY (Rast)' : 'SELL (Padec)';
+            return order.ok ? ok(res, order.result, `Trade ${tip} za ${symbol} uspešno ODPRT!`) : fail(res, order.code, order.message);
         }
     } catch (err) {
         return fail(res, -500, `Napaka strežnika: ${err.message}`);
