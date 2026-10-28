@@ -80,52 +80,66 @@ async function publicGet(apiPath, query = '') {
     }
 }
 
-// PRAVILNO BRANJE STANJA V EUR IZ BYBITA
+// DINAMIČNO BRANJE VSEH SREDSTEV IN IZRAČUN V EUR
 app.post('/api/balance', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         const r = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
         const rawCoins = r.result?.list?.[0]?.coin || [];
         
-        // Poiščemo točen EUR in USDT znesek
-        const eurCoin = rawCoins.find(c => c.coin === 'EUR');
-        const usdtCoin = rawCoins.find(c => c.coin === 'USDT');
-        
-        const eurBal = num(eurCoin?.equity || eurCoin?.walletBalance || eurCoin?.usdValue);
-        const usdtBal = num(usdtCoin?.equity || usdtCoin?.walletBalance);
-        
-        // Skupno premoženje v EUR (če ni EUR, preračunamo USDT v EUR z oceno ali vzamemo totalEquity)
-        let totalEquityEur = eurBal > 0 ? eurBal : (usdtBal > 0 ? usdtBal * 0.92 : num(r.result?.list?.[0]?.totalEquity) * 0.92);
-        if (totalEquityEur <= 0 && rawCoins.length > 0) {
-            // Če je karkoli drugega na voljo
-            totalEquityEur = rawCoins.reduce((sum, c) => sum + num(c.equity), 0);
-        }
-
         const tickersRes = await publicGet('/v5/market/tickers', 'category=spot');
         const tickersMap = {};
         if (tickersRes.ok && Array.isArray(tickersRes.result?.list)) {
             tickersRes.result.list.forEach(t => { tickersMap[t.symbol] = num(t.lastPrice); });
         }
 
-        const coins = rawCoins.map(c => ({
-            coin: c.coin,
-            account: 'UNIFIED',
-            total: num(c.walletBalance),
-            free: num(c.equity)
-        }));
+        let totalEquityEur = 0;
+        const coins = rawCoins.map(c => {
+            const total = num(c.walletBalance) || num(c.equity);
+            let eurVal = 0;
+            
+            if (total > 0) {
+                if (c.coin === 'EUR') {
+                    eurVal = total;
+                } else if (c.coin === 'USDT' || c.coin === 'USDC') {
+                    eurVal = total; // Računamo približno 1:1 z USD/USDT
+                } else {
+                    // Poiščemo ceno za kateri koli kovanec (npr. MNTUSDT ali MNTEUR)
+                    const price = tickersMap[c.coin + 'USDT'] || tickersMap[c.coin + 'EUR'] || tickersMap['USDT' + c.coin] || 0;
+                    eurVal = total * price;
+                }
+            }
+            
+            totalEquityEur += eurVal;
 
+            return {
+                coin: c.coin,
+                account: 'UNIFIED',
+                total: total,
+                free: num(c.equity),
+                eurValue: eurVal
+            };
+        });
+
+        // Če API vrne skupno vrednost neposredno iz Unified računa, jo preverimo
+        const totalEquityApi = num(r.result?.list?.[0]?.totalEquity);
+        if (totalEquityApi > 0) {
+            totalEquityEur = totalEquityApi;
+        }
+
+        // Aktivne pozicije (vse razen čistih fiat/stablecoin valut, ki imajo količino)
         const activePositions = coins.filter(c => 
-            c.coin !== 'USDT' && c.coin !== 'EUR' && c.coin !== 'USDC' && c.total > 0.00001
+            c.coin !== 'USDT' && c.coin !== 'EUR' && c.coin !== 'USDC' && c.total > 0.001
         ).map(c => {
             const pairUsdt = c.coin + 'USDT';
             const pairEur = c.coin + 'EUR';
             const symbol = tickersMap[pairEur] ? pairEur : pairUsdt;
-            const currentPrice = tickersMap[symbol] || 0;
+            
             return {
                 symbol: symbol,
                 coin: c.coin,
                 size: c.total,
-                eurValue: c.total * currentPrice
+                eurValue: c.eurValue
             };
         });
 
@@ -143,7 +157,7 @@ app.post('/api/balance', async (req, res) => {
 app.post('/api/analyze', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
-        const totalBudget = num(req.body?.totalAmount) || 1.5;
+        const totalBudget = num(req.body?.totalAmount) || 5;
         
         const tickers = await publicGet('/v5/market/tickers', 'category=spot');
         
@@ -208,7 +222,12 @@ app.post('/api/trade', async (req, res) => {
 
             let finalAmount = amount;
             if (freeEur > 0 && freeEur < amount) {
-                finalAmount = freeEur; // Vzamemo točno toliko kolikor je na voljo
+                finalAmount = freeEur;
+            }
+
+            const minOrderAmt = num(lotFilter?.minOrderAmt || '1');
+            if (finalAmount < minOrderAmt) {
+                return fail(res, -433, `Vneseni znesek je prenizek. Bybit minimum za ta par je ${minOrderAmt}.`);
             }
 
             const qtyQuote = floorToStep(finalAmount, lotFilter?.quotePrecision || '0.01');
@@ -224,9 +243,14 @@ app.post('/api/trade', async (req, res) => {
                 return fail(res, -432, `Nimate več ${baseCoin} za prodajo.`);
             }
 
+            const minOrderQty = num(lotFilter?.minOrderQty || '0.00001');
+            if (freeQty < minOrderQty) {
+                return fail(res, -433, `Količina ${baseCoin} je premajhna za trgovanje (Minimum je ${minOrderQty}).`);
+            }
+
             const qtyBase = floorToStep(freeQty, lotFilter?.basePrecision || '0.000001');
             orderBody.qty = qtyBase;
-            orderBody.marketUnit = 'baseCoin';
+            orderBody.marketType = 'baseCoin';
         }
 
         const order = await bybit('POST', '/v5/order/create', { body: orderBody });
