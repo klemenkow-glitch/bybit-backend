@@ -49,7 +49,7 @@
         .reasons { margin: 4px 0 4px 18px; padding: 0; color: #bbb; font-size: 12px; }
         .tradebtns { margin-top: 8px; }
         .slot { margin-top: 8px; }
-        .posrow { background: #2b2b30; padding: 10px; border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+        .posrow { background: #2b2b30; padding: 10px; border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
     </style>
 </head>
 <body>
@@ -193,6 +193,7 @@
     function renderSelect(i) {
         const sel = $('sel' + i);
         const inp = $('slot' + i);
+        if (!sel || !inp) return;
         inp.style.display = manual[i] ? 'block' : 'none';
         if (manual[i] && inp.value !== coins[i]) inp.value = coins[i] || '';
         if (document.activeElement === sel) return; // ne spreminjaj menija med uporabo
@@ -230,7 +231,8 @@
     const activeSlots = () => SLOT_IDX.filter(i => slotSymbol(i));
 
     function slotAmount(i) {
-        const own = parseFloat($('amt' + i).value);
+        const el = $('amt' + i);
+        const own = el ? parseFloat(el.value) : 0;
         if (own > 0) return own;
         const def = parseFloat($('startAmount').value);
         return def > 0 ? def : 0;
@@ -241,7 +243,10 @@
         $('totalInfo').innerHTML = total > 0
             ? `Skupaj: <b>&nbsp;${esc(fmt(total))} ${esc($('quote').value)}</b>`
             : 'Skupaj: –';
-        SLOT_IDX.forEach(i => { $('amt' + i).placeholder = $('startAmount').value ? `privzeto ${$('startAmount').value}` : 'znesek'; });
+        SLOT_IDX.forEach(i => {
+            const el = $('amt' + i);
+            if (el) el.placeholder = $('startAmount').value ? `privzeto ${$('startAmount').value}` : 'znesek';
+        });
     }
 
     function saveSettings() {
@@ -313,8 +318,9 @@
 
     // ============ Prikaz signalov ============
     function renderSlot(i) {
-        const symbol = slotSymbol(i);
         const el = $('res' + i);
+        if (!el) return;
+        const symbol = slotSymbol(i);
         if (!symbol) { el.innerHTML = ''; return; }
         const it = lastItems[symbol];
         if (!it) { el.innerHTML = `<div class="box dim">${esc(symbol)}: čakam na podatke...</div>`; return; }
@@ -402,11 +408,13 @@
         c.innerHTML = positions.map(pos => `
             <div class="posrow">
                 <div>
-                    <b style="font-size:15px; color:#f7a600;">${esc(pos.symbol)}</b><br>
+                    <b style="font-size:15px; color:#f7a600;">${esc(pos.symbol || pos.coin)}</b><br>
                     <span style="font-size:12px; color:#aaa;">Količina: ${Number(pos.size).toFixed(6)}</span><br>
                     <span style="font-size:13px;">Vrednost: €${eur(pos.eurValue)}</span>
                 </div>
-                <button class="btn-close-pos" data-close="${esc(pos.symbol)}">ZAPRI POZICIJO</button>
+                ${pos.symbol
+                    ? `<button class="btn-close-pos" data-close="${esc(pos.symbol)}">ZAPRI POZICIJO</button>`
+                    : `<span class="dim" style="font-size:12px; text-align:right;">Ni trgovalnega para<br>na Bybit Spot</span>`}
             </div>`).join('');
     }
 
@@ -541,6 +549,10 @@
         sendTrade({ symbol, side: 'Sell', amount: 0, sellAll: true });
     }
 
+    // ============ Zagon: najprej zgradi vrstice trgov, šele nato pripni dogodke ============
+    buildSlots();
+    loadSettings();
+
     $('slots').addEventListener('click', e => {
         const btn = e.target.closest('button[data-side]');
         if (btn) tradeFromSlot(parseInt(btn.dataset.slot, 10), btn.dataset.side, btn.dataset.symbol);
@@ -550,7 +562,6 @@
         if (btn) closePosition(btn.dataset.close);
     });
 
-    // ============ Dogodki ============
     $('connectBtn').addEventListener('click', async () => {
         const good = await connectAndFetch();
         if (good) {
@@ -607,9 +618,6 @@
     });
 
     document.addEventListener('visibilitychange', () => { if (!document.hidden && pollTimer) poll(); });
-
-    buildSlots();
-    loadSettings();
 </script>
 </body>
 </html>
