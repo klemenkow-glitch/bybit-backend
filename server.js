@@ -80,20 +80,71 @@ async function publicGet(apiPath, query = '') {
     }
 }
 
+// STANJE IN AKTIVNE POZICIJE (S PREGLEDOM P&L)
 app.post('/api/balance', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         const r = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
-        const coins = (r.result?.list?.[0]?.coin || []).map(c => ({
-            coin: c.coin, account: 'UNIFIED', total: num(c.walletBalance), free: num(c.equity)
-        }));
-        return ok(res, { totalEquity: num(r.result?.list?.[0]?.totalEquity), coins });
+        const rawCoins = r.result?.list?.[0]?.coin || [];
+        
+        // Pridobimo še zadnje cene za izračun vrednosti in pozicij
+        const tickersRes = await publicGet('/v5/market/tickers', 'category=spot');
+        const tickersMap = {};
+        if (tickersRes.ok && Array.isArray(tickersRes.result?.list)) {
+            tickersRes.result.list.forEach(t => { tickersMap[t.symbol] = num(t.lastPrice); });
+        }
+
+        const coins = rawCoins.map(c => {
+            const total = num(c.walletBalance);
+            const free = num(c.equity);
+            const coinName = c.coin;
+            
+            // Izračun ocenjene vrednosti v USD/EUR
+            let currentPrice = 1;
+            if (coinName !== 'USDT' && coinName !== 'EUR' && coinName !== 'USDC') {
+                currentPrice = tickersMap[coinName + 'USDT'] || tickersMap[coinName + 'EUR'] || 0;
+            }
+            const usdValue = total * currentPrice;
+
+            return {
+                coin: coinName,
+                account: 'UNIFIED',
+                total: total,
+                free: free,
+                usdValue: usdValue,
+                currentPrice: currentPrice
+            };
+        });
+
+        // Filtriramo aktivne pozicije (kripto kovanci z vrednostjo > 1 USD)
+        const activePositions = coins.filter(c => 
+            c.coin !== 'USDT' && c.coin !== 'EUR' && c.coin !== 'USDC' && c.total > 0.00001 && c.usdValue > 0.5
+        ).map(c => {
+            // Poskusimo najti par v EUR ali USDT
+            const pairUsdt = c.coin + 'USDT';
+            const pairEur = c.coin + 'EUR';
+            const symbol = tickersMap[pairEur] ? pairEur : pairUsdt;
+            
+            return {
+                symbol: symbol,
+                coin: c.coin,
+                size: c.total,
+                usdValue: c.usdValue,
+                currentPrice: c.currentPrice
+            };
+        });
+
+        return ok(res, { 
+            totalEquity: num(r.result?.list?.[0]?.totalEquity), 
+            coins, 
+            activePositions 
+        });
     } catch (err) {
         return fail(res, -500, err.message);
     }
 });
 
-// ZANESLJIV SPOT SKENER ZA BYBIT EU
+// AI SKENER ZA 5 NAJBOLJŠIH TRGOVALNIH PRILOŽNOSTI
 app.post('/api/analyze', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -103,7 +154,6 @@ app.post('/api/analyze', async (req, res) => {
         
         let items = [];
         if (tickers.ok && Array.isArray(tickers.result?.list)) {
-            // Prednost imajo EUR pari, sicer USDT pari
             const eurPairs = tickers.result.list.filter(t => t.symbol && t.symbol.endsWith('EUR'));
             const sourceList = eurPairs.length >= 5 ? eurPairs : tickers.result.list.filter(t => t.symbol && t.symbol.endsWith('USDT'));
 
@@ -115,9 +165,9 @@ app.post('/api/analyze', async (req, res) => {
                     const chg = num(t.price24hPcnt) * 100;
                     
                     let signal = 'HOLD';
-                    let reasons = ['Cena stabilna'];
-                    if (chg > 0.4) { signal = 'BUY'; reasons = ['Trend rasti (+24h)']; }
-                    else if (chg < -0.4) { signal = 'SELL'; reasons = ['Trend padanja (-24h)']; }
+                    let reasons = ['Trg stabilen'];
+                    if (chg > 0.2) { signal = 'BUY'; reasons = ['Momentum rasti (+24h)']; }
+                    else if (chg < -0.2) { signal = 'SELL'; reasons = ['Pritisk prodajalcev (-24h)']; }
 
                     return {
                         symbol: t.symbol,
@@ -135,6 +185,7 @@ app.post('/api/analyze', async (req, res) => {
     }
 });
 
+// IZVEDBA NAROČILA (NAKUP ALI PRODAJA / ZAPIRANJE)
 app.post('/api/trade', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -160,14 +211,14 @@ app.post('/api/trade', async (req, res) => {
             orderBody.qty = qtyQuote;
             orderBody.marketUnit = 'quoteCoin';
         } else {
-            // Prodaja celotne količine kovanca na računu
+            // Prodaja / Zapiranje celotne pozicije
             const rWallet = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
-            const baseCoin = inst.result?.list?.[0]?.baseCoin || symbol.replace(/EUR|USDT/, '');
+            const baseCoin = inst.result?.list?.[0]?.baseCoin || symbol.replace(/EUR|USDT|USDC/, '');
             const coinData = (rWallet.result?.list?.[0]?.coin || []).find(c => c.coin === baseCoin);
             const freeQty = num(coinData?.equity || coinData?.walletBalance);
 
             if (freeQty <= 0) {
-                return fail(res, -432, `Nimate ${baseCoin} v denarnici za prodajo.`);
+                return fail(res, -432, `Nimate več ${baseCoin} na računu.`);
             }
 
             const qtyBase = floorToStep(freeQty, lotFilter?.basePrecision || '0.000001');
@@ -176,16 +227,13 @@ app.post('/api/trade', async (req, res) => {
         }
 
         const order = await bybit('POST', '/v5/order/create', { body: orderBody });
-        return order.ok ? ok(res, order.result, `Naročilo ${side} za ${symbol} uspešno izvedeno!`) : fail(res, order.code, order.message);
+        return order.ok ? ok(res, order.result, `Pozicija uspešno zaključena/izvedena!`) : fail(res, order.code, order.message);
     } catch (err) {
         return fail(res, -500, `Napaka strežnika: ${err.message}`);
     }
 });
 
 app.use('*', (req, res) => res.status(404).json({ status: 'error', code: 404, message: 'Pot ne obstaja.' }));
-
-process.on('uncaughtException', (err) => console.error('uncaughtException:', err.message));
-process.on('unhandledRejection', (reason) => console.error('unhandledRejection:', reason));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 STREŽNIK TEČE NA PORTU ${PORT}`));
