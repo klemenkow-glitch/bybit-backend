@@ -129,7 +129,7 @@ async function loadWallet() {
     const acc = r.result?.list?.[0];
     const coins = (acc?.coin || []).map(c => {
         const total = num(c.walletBalance) || num(c.equity);
-        return { coin: c.coin, total, free: Math.max(0, total - num(c.locked)) };
+        return { coin: c.coin, total, free: Math.max(0, total - num(c.locked)), usdValue: num(c.usdValue) };
     });
     return { ok: true, coins };
 }
@@ -173,8 +173,10 @@ async function getTickers() {
 
 const priceMap = list => { const m = {}; list.forEach(t => { m[t.symbol] = num(t.lastPrice); }); return m; };
 
+const usdToEur = m => m['USDTEUR'] || (m['EURUSDT'] ? 1 / m['EURUSDT'] : 0);
+
 function eurConverter(m) {
-    const usdtEur = m['USDTEUR'] || (m['EURUSDT'] ? 1 / m['EURUSDT'] : 0);
+    const usdtEur = usdToEur(m);
     return coin => {
         if (coin === 'EUR') return 1;
         if (m[coin + 'EUR']) return m[coin + 'EUR'];
@@ -390,10 +392,18 @@ app.post('/api/balance', async (req, res) => {
 
         const m = tk.ok ? priceMap(tk.list) : {};
         const toEur = eurConverter(m);
+        const usdEur = usdToEur(m);
 
-        const coins = uni.coins.filter(c => c.total > 0).map(c => ({ ...c, eurValue: c.total * toEur(c.coin) }));
+        // Vrednost v EUR: najprej tržna cena, sicer Bybitova vrednost v USD
+        const valueEur = c => {
+            const p = toEur(c.coin);
+            if (p > 0) return c.total * p;
+            return (c.usdValue || 0) * usdEur;
+        };
+
+        const coins = uni.coins.filter(c => c.total > 0).map(c => ({ ...c, eurValue: valueEur(c) }));
         const funding = fund.ok
-            ? fund.coins.filter(c => c.total > 0).map(c => ({ ...c, eurValue: c.total * toEur(c.coin) }))
+            ? fund.coins.filter(c => c.total > 0).map(c => ({ ...c, eurValue: valueEur(c) }))
             : [];
         const sum = list => list.reduce((s, c) => s + c.eurValue, 0);
 
@@ -403,16 +413,20 @@ app.post('/api/balance', async (req, res) => {
             USDC: freeOf(uni.coins, 'USDC')
         };
 
+        // Trgovalni par za kovanec (null, če na Spot ne obstaja)
+        const tradePair = coin => ['EUR', 'USDT', 'USDC'].map(q => coin + q).find(s => m[s]) || null;
+
         const activePositions = coins
             .filter(c => !['EUR', 'USDT', 'USDC'].includes(c.coin) && c.eurValue >= 0.5)
             .map(c => ({
-                symbol: m[c.coin + 'EUR'] ? c.coin + 'EUR' : c.coin + 'USDT',
+                symbol: tradePair(c.coin),
                 coin: c.coin, size: c.total, free: c.free, eurValue: c.eurValue
             }));
 
         const warnings = [];
         if (!fund.ok) warnings.push(`Funding: ${fund.message}`);
         if (!tk.ok) warnings.push(`Cene: ${tk.message}`);
+        if (!usdEur) warnings.push('Tečaja USD→EUR ni bilo mogoče določiti, vrednosti kovancev brez EUR para so lahko prikazane kot 0.');
 
         return ok(res, {
             totalEquity: sum(coins), fundingEquity: sum(funding), currency: 'EUR',
