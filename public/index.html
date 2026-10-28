@@ -44,14 +44,14 @@
         <input type="password" id="appPassword" placeholder="Vnesite geslo aplikacije">
 
         <label>Znesek za vstop v trade (€):</label>
-        <input type="number" id="totalBudget" value="25" placeholder="Vnesite znesek">
+        <input type="number" id="totalBudget" value="1.5" step="0.1" placeholder="Vnesite znesek">
 
         <button class="btn-connect" onclick="connectAndFetch()">Poveži in Zaženi Terminal</button>
 
         <div class="status" id="statusBox">Status: <b>Čakam na povezavo...</b></div>
     </div>
 
-    <!-- AKTIVNE POZICIJE Z REAL-TIME P&L (ZELENA / RDEČA) -->
+    <!-- AKTIVNE POZICIJE Z REAL-TIME P&L -->
     <div class="card">
         <h3>Aktivne Pozicije & Dobiček (P&L)</h3>
         <div id="activePositionsContainer">
@@ -93,9 +93,14 @@
             const resData = await res.json();
 
             if (resData.status === 'success' && resData.data) {
-                const totalEquity = resData.data.totalEquity ? ` (${resData.data.totalEquity.toFixed(2)} EUR)` : '';
+                const totalEquity = resData.data.totalEquity ? resData.data.totalEquity : 0;
                 statusBox.style.color = '#4CAF50';
-                statusBox.innerHTML = `<b>Povezano uspešno!</b> Skupno premoženje: <b>${totalEquity}</b>`;
+                statusBox.innerHTML = `<b>Povezano uspešno!</b> Skupno premoženje: <b>${totalEquity.toFixed(2)} EUR</b>`;
+
+                // Samodejno nastavi vnosni okenca na dejansko stanje, če je manjše od 25
+                if (totalEquity > 0) {
+                    document.getElementById('totalBudget').value = totalEquity.toFixed(2);
+                }
 
                 renderActivePositions(resData.data.activePositions || []);
                 startAIScanner();
@@ -118,9 +123,7 @@
 
         container.innerHTML = '';
         positions.forEach(pos => {
-            // Zelena za plus (vrednost > 0), rdeča sicer
             const pnlClass = pos.eurValue >= 0 ? 'profit-pos' : 'loss-pos';
-            
             container.innerHTML += `
                 <div style="background: #2b2b30; padding: 10px; border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
                     <div>
@@ -144,7 +147,7 @@
 
     async function runAnalysis() {
         const password = document.getElementById('appPassword').value.trim();
-        const totalAmount = document.getElementById('totalBudget').value || 25;
+        const totalAmount = document.getElementById('totalBudget').value || 1.5;
         const container = document.getElementById('aiSignalsContainer');
 
         if (!password) return;
