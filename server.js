@@ -80,7 +80,7 @@ async function publicGet(apiPath, query = '') {
     }
 }
 
-// DINAMIČNO BRANJE VSEH SREDSTEV IN IZRAČUN V EUR
+// STANJE IN PREMOŽENJE V EUR
 app.post('/api/balance', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -102,9 +102,8 @@ app.post('/api/balance', async (req, res) => {
                 if (c.coin === 'EUR') {
                     eurVal = total;
                 } else if (c.coin === 'USDT' || c.coin === 'USDC') {
-                    eurVal = total; // Računamo približno 1:1 z USD/USDT
+                    eurVal = total;
                 } else {
-                    // Poiščemo ceno za kateri koli kovanec (npr. MNTUSDT ali MNTEUR)
                     const price = tickersMap[c.coin + 'USDT'] || tickersMap[c.coin + 'EUR'] || tickersMap['USDT' + c.coin] || 0;
                     eurVal = total * price;
                 }
@@ -121,13 +120,11 @@ app.post('/api/balance', async (req, res) => {
             };
         });
 
-        // Če API vrne skupno vrednost neposredno iz Unified računa, jo preverimo
         const totalEquityApi = num(r.result?.list?.[0]?.totalEquity);
         if (totalEquityApi > 0) {
             totalEquityEur = totalEquityApi;
         }
 
-        // Aktivne pozicije (vse razen čistih fiat/stablecoin valut, ki imajo količino)
         const activePositions = coins.filter(c => 
             c.coin !== 'USDT' && c.coin !== 'EUR' && c.coin !== 'USDC' && c.total > 0.001
         ).map(c => {
@@ -217,22 +214,33 @@ app.post('/api/trade', async (req, res) => {
         if (side === 'Buy') {
             const rWallet = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
             const coinsList = rWallet.result?.list?.[0]?.coin || [];
+            
             const eurCoin = coinsList.find(c => c.coin === 'EUR');
+            const usdtCoin = coinsList.find(c => c.coin === 'USDT');
+            
             const freeEur = num(eurCoin?.equity || eurCoin?.walletBalance);
+            const freeUsdt = num(usdtCoin?.equity || usdtCoin?.walletBalance);
 
             let finalAmount = amount;
-            if (freeEur > 0 && freeEur < amount) {
+            if (symbol.endsWith('EUR') && freeEur > 0 && freeEur < amount) {
                 finalAmount = freeEur;
+            } else if (symbol.endsWith('USDT') && freeUsdt > 0 && freeUsdt < amount) {
+                finalAmount = freeUsdt;
             }
 
             const minOrderAmt = num(lotFilter?.minOrderAmt || '1');
-            if (finalAmount < minOrderAmt) {
-                return fail(res, -433, `Vneseni znesek je prenizek. Bybit minimum za ta par je ${minOrderAmt}.`);
-            }
+            const minOrderQty = num(lotFilter?.minOrderQty || '0.00001');
 
-            const qtyQuote = floorToStep(finalAmount, lotFilter?.quotePrecision || '0.01');
-            orderBody.qty = qtyQuote;
-            orderBody.marketUnit = 'quoteCoin';
+            if (finalAmount < minOrderAmt && finalAmount * price >= minOrderQty) {
+                orderBody.qty = floorToStep(finalAmount / price, lotFilter?.basePrecision || '0.000001');
+                orderBody.marketUnit = 'baseCoin';
+            } else {
+                if (finalAmount < minOrderAmt) {
+                    finalAmount = minOrderAmt;
+                }
+                orderBody.qty = floorToStep(finalAmount, lotFilter?.quotePrecision || '0.01');
+                orderBody.marketUnit = 'quoteCoin';
+            }
         } else {
             const rWallet = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
             const baseCoin = inst.result?.list?.[0]?.baseCoin || symbol.replace(/EUR|USDT|USDC/, '');
@@ -240,17 +248,12 @@ app.post('/api/trade', async (req, res) => {
             const freeQty = num(coinData?.equity || coinData?.walletBalance);
 
             if (freeQty <= 0) {
-                return fail(res, -432, `Nimate več ${baseCoin} za prodajo.`);
-            }
-
-            const minOrderQty = num(lotFilter?.minOrderQty || '0.00001');
-            if (freeQty < minOrderQty) {
-                return fail(res, -433, `Količina ${baseCoin} je premajhna za trgovanje (Minimum je ${minOrderQty}).`);
+                return fail(res, -432, `Nimate dovolj ${baseCoin} za prodajo.`);
             }
 
             const qtyBase = floorToStep(freeQty, lotFilter?.basePrecision || '0.000001');
             orderBody.qty = qtyBase;
-            orderBody.marketType = 'baseCoin';
+            orderBody.marketUnit = 'baseCoin';
         }
 
         const order = await bybit('POST', '/v5/order/create', { body: orderBody });
