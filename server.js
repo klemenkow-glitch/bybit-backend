@@ -5,26 +5,23 @@ const path = require('path');
 
 const app = express();
 app.set('trust proxy', 1);
-
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    if (req.method === 'OPTIONS') return res.sendStatus(200);
-    next();
-});
-
 app.use(express.json({ limit: '50kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ---------- Pomočniki ----------
+const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const fmt8 = n => Number(n).toFixed(8).replace(/\.?0+$/, '');
+const cleanSymbol = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const validSymbol = s => /^[A-Z0-9]{5,20}$/.test(s);
+const freeOf = (coins, coin) => coins.filter(c => c.coin === coin).reduce((s, c) => s + c.free, 0);
 
 const BYBIT_URL = (process.env.BYBIT_BASE_URL || 'https://api.bybit.eu').trim();
 const API_KEY = (process.env.BYBIT_API_KEY || '').trim();
 const API_SECRET = (process.env.BYBIT_API_SECRET || '').trim();
 const APP_PASSWORD = (process.env.APP_PASSWORD || '').trim();
+const MAX_ORDER_AMOUNT = num(process.env.MAX_ORDER_AMOUNT); // 0 = brez omejitve
 const RECV_WINDOW = '10000';
-
-const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
-const cleanSymbol = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 const ok = (res, data, message = 'OK') => res.json({ status: 'success', code: 0, message, data });
 const fail = (res, code, message, data = null) => res.json({ status: 'error', code, message, data });
@@ -37,14 +34,59 @@ function floorToStep(value, step) {
     return (Math.floor(value / st + 1e-9) * st).toFixed(d);
 }
 
+// ---------- Geslo: zaklep po 5 napačnih poskusih za 15 minut ----------
+const fails = new Map();
+const MAX_FAILS = 5;
+const LOCK_MS = 15 * 60 * 1000;
 const sha = s => crypto.createHash('sha256').update(String(s)).digest();
+
 function checkAuth(req, res) {
-    const sent = String(req.body?.password || '').trim();
-    if (APP_PASSWORD.length > 0 && !crypto.timingSafeEqual(sha(sent), sha(APP_PASSWORD))) {
-        fail(res, 401, 'Napačno geslo.');
+    if (!APP_PASSWORD) {
+        res.status(503).json({ status: 'error', code: 503, message: 'APP_PASSWORD ni nastavljen na strežniku.', data: null });
         return false;
     }
+    const ip = req.ip;
+    const rec = fails.get(ip) || { count: 0, lockUntil: 0 };
+    if (rec.lockUntil > Date.now()) {
+        const min = Math.ceil((rec.lockUntil - Date.now()) / 60000);
+        res.status(429).json({ status: 'error', code: 429, message: `Preveč napačnih poskusov. Poskusite čez ${min} min.`, data: null });
+        return false;
+    }
+    const sent = String(req.body?.password || '').trim();
+    if (!crypto.timingSafeEqual(sha(sent), sha(APP_PASSWORD))) {
+        rec.count += 1;
+        if (rec.count >= MAX_FAILS) { rec.lockUntil = Date.now() + LOCK_MS; rec.count = 0; }
+        fails.set(ip, rec);
+        res.status(401).json({ status: 'error', code: 401, message: 'Napačno geslo.', data: null });
+        return false;
+    }
+    fails.delete(ip);
     return true;
+}
+
+function keysMissing(res) {
+    if (!API_KEY || !API_SECRET) {
+        fail(res, -400, 'Na strežniku manjkata BYBIT_API_KEY / BYBIT_API_SECRET.');
+        return true;
+    }
+    return false;
+}
+
+// ---------- Bybit klici ----------
+function snippet(body) {
+    try {
+        const s = typeof body === 'string' ? body : JSON.stringify(body);
+        return (s || '(prazno)').replace(/\s+/g, ' ').slice(0, 160);
+    } catch { return '(ni berljivo)'; }
+}
+
+function parseReply(response) {
+    const data = response.data;
+    if (!data || typeof data !== 'object') {
+        return { ok: false, code: response.status, message: `Bybit ni vrnil JSON (HTTP ${response.status}). ${snippet(data)}` };
+    }
+    if (data.retCode === 0) return { ok: true, result: data.result };
+    return { ok: false, code: data.retCode ?? -1, message: data.retMsg || 'Napaka Bybit API' };
 }
 
 async function bybit(method, apiPath, { query = '', body = null } = {}) {
@@ -52,19 +94,19 @@ async function bybit(method, apiPath, { query = '', body = null } = {}) {
         const timestamp = Date.now().toString();
         const bodyStr = body ? JSON.stringify(body) : '';
         const payload = method === 'GET' ? query : bodyStr;
-        const signature = crypto.createHmac('sha256', API_SECRET).update(timestamp + API_KEY + RECV_WINDOW + payload).digest('hex');
-        const headers = { 
-            'X-BAPI-API-KEY': API_KEY, 
-            'X-BAPI-SIGN': signature, 
-            'X-BAPI-TIMESTAMP': timestamp, 
-            'X-BAPI-RECV-WINDOW': RECV_WINDOW 
+        const signature = crypto.createHmac('sha256', API_SECRET)
+            .update(timestamp + API_KEY + RECV_WINDOW + payload).digest('hex');
+        const headers = {
+            'X-BAPI-API-KEY': API_KEY,
+            'X-BAPI-SIGN': signature,
+            'X-BAPI-TIMESTAMP': timestamp,
+            'X-BAPI-RECV-WINDOW': RECV_WINDOW
         };
         const url = `${BYBIT_URL}${apiPath}${method === 'GET' && query ? '?' + query : ''}`;
-        let response = method === 'GET' 
-            ? await axios.get(url, { headers, timeout: 10000, validateStatus: () => true })
-            : await axios.post(url, bodyStr, { headers: { ...headers, 'Content-Type': 'application/json' }, timeout: 10000, validateStatus: () => true });
-        
-        return response.data?.retCode === 0 ? { ok: true, result: response.data.result } : { ok: false, code: response.data?.retCode || -1, message: response.data?.retMsg || 'Napaka Bybit API' };
+        const response = method === 'GET'
+            ? await axios.get(url, { headers, timeout: 15000, validateStatus: () => true })
+            : await axios.post(url, bodyStr, { headers: { ...headers, 'Content-Type': 'application/json' }, timeout: 15000, validateStatus: () => true });
+        return parseReply(response);
     } catch (e) {
         return { ok: false, code: -500, message: e.message };
     }
@@ -73,157 +115,174 @@ async function bybit(method, apiPath, { query = '', body = null } = {}) {
 async function publicGet(apiPath, query = '') {
     try {
         const url = `${BYBIT_URL}${apiPath}${query ? '?' + query : ''}`;
-        const response = await axios.get(url, { timeout: 10000, validateStatus: () => true });
-        return response.data?.retCode === 0 ? { ok: true, result: response.data.result } : { ok: false, message: response.data?.retMsg || 'Napaka API' };
+        const response = await axios.get(url, { timeout: 15000, validateStatus: () => true });
+        return parseReply(response);
     } catch (e) {
-        return { ok: false, message: e.message };
+        return { ok: false, code: -500, message: e.message };
     }
 }
 
-// 1. STANJE IN PREMOŽENJE
+// ---------- Stanja ----------
+async function loadWallet() {
+    const r = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
+    if (!r.ok) return { ok: false, message: `${r.message} (${r.code})` };
+    const acc = r.result?.list?.[0];
+    const coins = (acc?.coin || []).map(c => {
+        const total = num(c.walletBalance) || num(c.equity);
+        return { coin: c.coin, total, free: Math.max(0, total - num(c.locked)) };
+    });
+    return { ok: true, coins };
+}
+
+async function loadFunding() {
+    const r = await bybit('GET', '/v5/asset/transfer/query-account-coins-balance', { query: 'accountType=FUND' });
+    if (!r.ok) return { ok: false, message: `${r.message} (${r.code})` };
+    const coins = (r.result?.balance || []).map(c => {
+        const total = num(c.walletBalance);
+        const hasTransfer = c.transferBalance !== undefined && c.transferBalance !== '';
+        return { coin: c.coin, total, free: hasTransfer ? num(c.transferBalance) : total };
+    });
+    return { ok: true, coins };
+}
+
+async function doTransfer(coin, amount, from, to) {
+    return bybit('POST', '/v5/asset/transfer/inter-transfer', {
+        body: { transferId: crypto.randomUUID(), coin, amount, fromAccountType: from, toAccountType: to }
+    });
+}
+
+// ---------- Cene ----------
+let tkCache = { ts: 0, list: null };
+async function getTickers() {
+    if (tkCache.list && Date.now() - tkCache.ts < 5000) return { ok: true, list: tkCache.list };
+    const r = await publicGet('/v5/market/tickers', 'category=spot');
+    if (!r.ok) return r;
+    const list = r.result?.list || [];
+    tkCache = { ts: Date.now(), list };
+    return { ok: true, list };
+}
+
+function priceMap(list) {
+    const m = {};
+    list.forEach(t => { m[t.symbol] = num(t.lastPrice); });
+    return m;
+}
+
+// Vrne funkcijo: kovanec -> cena v EUR
+function eurConverter(m) {
+    const usdtEur = m['USDTEUR'] || (m['EURUSDT'] ? 1 / m['EURUSDT'] : 0);
+    return coin => {
+        if (coin === 'EUR') return 1;
+        if (m[coin + 'EUR']) return m[coin + 'EUR'];
+        if (coin === 'USDT') return usdtEur;
+        if (coin === 'USDC') return m['USDCEUR'] || usdtEur;
+        const u = m[coin + 'USDT'];
+        return u && usdtEur ? u * usdtEur : 0;
+    };
+}
+
+const instCache = new Map();
+async function getInstrument(symbol) {
+    const c = instCache.get(symbol);
+    if (c && Date.now() - c.ts < 10 * 60 * 1000) return c.val;
+    const r = await publicGet('/v5/market/instruments-info', `category=spot&symbol=${symbol}`);
+    const it = r.ok ? r.result?.list?.[0] : null;
+    if (!it) return null;
+    const val = {
+        base: it.baseCoin, quote: it.quoteCoin, status: it.status,
+        basePrecision: it.lotSizeFilter?.basePrecision,
+        quotePrecision: it.lotSizeFilter?.quotePrecision,
+        minOrderQty: it.lotSizeFilter?.minOrderQty,
+        minOrderAmt: it.lotSizeFilter?.minOrderAmt
+    };
+    instCache.set(symbol, { ts: Date.now(), val });
+    return val;
+}
+
+// ====================== API ======================
+app.get('/api/health', (req, res) => {
+    ok(res, {
+        passwordSet: APP_PASSWORD.length > 0,
+        keySet: API_KEY.length > 0,
+        secretSet: API_SECRET.length > 0,
+        baseUrl: BYBIT_URL,
+        maxOrderAmount: MAX_ORDER_AMOUNT || null
+    });
+});
+
+// 1. Stanje (Unified + Funding), vrednosti v EUR
 app.post('/api/balance', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
-        const r = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
-        const rawCoins = r.result?.list?.[0]?.coin || [];
-        
-        const tickersRes = await publicGet('/v5/market/tickers', 'category=spot');
-        const tickersMap = {};
-        if (tickersRes.ok && Array.isArray(tickersRes.result?.list)) {
-            tickersRes.result.list.forEach(t => { tickersMap[t.symbol] = num(t.lastPrice); });
-        }
+        if (keysMissing(res)) return;
 
-        let totalEquityEur = 0;
-        const coins = rawCoins.map(c => {
-            const total = num(c.walletBalance) || num(c.equity);
-            let eurVal = 0;
-            
-            if (total > 0) {
-                if (c.coin === 'EUR') {
-                    eurVal = total;
-                } else if (c.coin === 'USDT' || c.coin === 'USDC') {
-                    eurVal = total;
-                } else {
-                    const price = tickersMap[c.coin + 'USDT'] || tickersMap[c.coin + 'EUR'] || tickersMap['USDT' + c.coin] || 0;
-                    eurVal = total * price;
-                }
-            }
-            totalEquityEur += eurVal;
+        const [uni, fund, tk] = await Promise.all([loadWallet(), loadFunding(), getTickers()]);
+        if (!uni.ok) return fail(res, -1, `Unified: ${uni.message}`);
 
-            return { coin: c.coin, account: 'UNIFIED', total, free: num(c.equity), eurValue: eurVal };
+        const m = tk.ok ? priceMap(tk.list) : {};
+        const toEur = eurConverter(m);
+
+        const coins = uni.coins.filter(c => c.total > 0)
+            .map(c => ({ ...c, eurValue: c.total * toEur(c.coin) }));
+        const funding = fund.ok
+            ? fund.coins.filter(c => c.total > 0).map(c => ({ ...c, eurValue: c.total * toEur(c.coin) }))
+            : [];
+
+        const sum = list => list.reduce((s, c) => s + c.eurValue, 0);
+        const quoteFree = {
+            EUR: freeOf(uni.coins, 'EUR'),
+            USDT: freeOf(uni.coins, 'USDT'),
+            USDC: freeOf(uni.coins, 'USDC')
+        };
+
+        const activePositions = coins
+            .filter(c => !['EUR', 'USDT', 'USDC'].includes(c.coin) && c.eurValue >= 0.5)
+            .map(c => ({
+                symbol: m[c.coin + 'EUR'] ? c.coin + 'EUR' : c.coin + 'USDT',
+                coin: c.coin, size: c.total, free: c.free, eurValue: c.eurValue
+            }));
+
+        const warnings = [];
+        if (!fund.ok) warnings.push(`Funding: ${fund.message}`);
+        if (!tk.ok) warnings.push(`Cene: ${tk.message}`);
+
+        return ok(res, {
+            totalEquity: sum(coins),
+            fundingEquity: sum(funding),
+            currency: 'EUR',
+            coins, funding, quoteFree, activePositions, warnings
         });
-
-        const totalEquityApi = num(r.result?.list?.[0]?.totalEquity);
-        if (totalEquityApi > 0) totalEquityEur = totalEquityApi;
-
-        const activePositions = coins.filter(c => 
-            c.coin !== 'USDT' && c.coin !== 'EUR' && c.coin !== 'USDC' && c.total > 0.001
-        ).map(c => {
-            const pairUsdt = c.coin + 'USDT';
-            const pairEur = c.coin + 'EUR';
-            const symbol = tickersMap[pairEur] ? pairEur : pairUsdt;
-            return { symbol, coin: c.coin, size: c.total, eurValue: c.eurValue };
-        });
-
-        return ok(res, { totalEquity: totalEquityEur, currency: 'EUR', coins, activePositions });
     } catch (err) {
         return fail(res, -500, err.message);
     }
 });
 
-// 2. AI ANALIZA TRGA
+// 2. Predlogi trgov (top 5 po prometu, brez stabilnih kovancev)
+const STABLE_BASES = new Set(['USDT', 'USDC', 'USDE', 'FDUSD', 'TUSD', 'DAI', 'BUSD', 'USDD', 'PYUSD', 'USD1', 'USDP', 'GUSD', 'EUR', 'EURI', 'EURC', 'EURR', 'AEUR']);
+const isLeveraged = base => /\d[LS]$/.test(base);
+
 app.post('/api/analyze', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
-        const totalBudget = num(req.body?.totalAmount) || 5;
-        const tickers = await publicGet('/v5/market/tickers', 'category=spot');
-        
-        let items = [];
-        if (tickers.ok && Array.isArray(tickers.result?.list)) {
-            const eurPairs = tickers.result.list.filter(t => t.symbol && t.symbol.endsWith('EUR'));
-            const sourceList = eurPairs.length >= 5 ? eurPairs : tickers.result.list.filter(t => t.symbol && t.symbol.endsWith('USDT'));
+        const tk = await getTickers();
+        if (!tk.ok) return fail(res, -1, tk.message);
 
-            items = sourceList
-                .sort((a, b) => num(b.turnover24h) - num(a.turnover24h))
-                .slice(0, 5)
-                .map(t => {
-                    const price = num(t.lastPrice);
-                    const chg = num(t.price24hPcnt) * 100;
-                    let signal = 'HOLD', reasons = ['Trg stabilen'];
-                    if (chg > 0.2) { signal = 'BUY'; reasons = ['Momentum rasti (+24h)']; }
-                    else if (chg < -0.2) { signal = 'SELL'; reasons = ['Pritisk prodajalcev (-24h)']; }
-                    return { symbol: t.symbol, lastPrice: price, change24h: chg.toFixed(2), signal, reasons };
-                });
-        }
-        return ok(res, { items, fullAmount: totalBudget, ts: Date.now() });
-    } catch (err) {
-        return fail(res, -500, err.message);
-    }
-});
+        const pick = quote => tk.list
+            .filter(t => t.symbol && t.symbol.endsWith(quote) && t.symbol.length > quote.length)
+            .map(t => ({ t, base: t.symbol.slice(0, -quote.length), quote }))
+            .filter(x => !STABLE_BASES.has(x.base) && !isLeveraged(x.base) && num(x.t.turnover24h) >= 20000);
 
-// 3. POPOLNOMA OČIŠČENO NAROČILO (BREZ NAPAKE 170130)
-app.post('/api/trade', async (req, res) => {
-    try {
-        if (!checkAuth(req, res)) return;
-        const symbol = cleanSymbol(req.body?.symbol);
-        const side = String(req.body?.side || '');
-        const amount = num(req.body?.amount);
+        let list = pick('EUR');
+        if (list.length < 5) list = pick('USDT');
 
-        if (!symbol || (side !== 'Buy' && side !== 'Sell')) {
-            return fail(res, -422, 'Neveljavni podatki za naročilo.');
-        }
-
-        const tk = await publicGet('/v5/market/tickers', `category=spot&symbol=${symbol}`);
-        const price = num(tk.result?.list?.[0]?.lastPrice);
-        if (!price) return fail(res, -406, 'Cene ni mogoče pridobiti.');
-
-        const inst = await publicGet('/v5/market/instruments-info', `category=spot&symbol=${symbol}`);
-        const lotFilter = inst.result?.list?.[0]?.lotSizeFilter;
-        
-        let orderBody = {
-            category: 'spot',
-            symbol: symbol,
-            side: side,
-            orderType: 'Market'
-        };
-
-        if (side === 'Buy') {
-            const rWallet = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
-            const coinsList = rWallet.result?.list?.[0]?.coin || [];
-            const eurCoin = coinsList.find(c => c.coin === 'EUR');
-            const freeEur = num(eurCoin?.equity || eurCoin?.walletBalance);
-
-            let finalAmount = amount;
-            if (freeEur > 0 && freeEur < amount) {
-                finalAmount = freeEur;
-            }
-
-            const minOrderAmt = num(lotFilter?.minOrderAmt || '1');
-            if (finalAmount < minOrderAmt) finalAmount = minOrderAmt;
-
-            // Pošljemo količino direktno kot qty glede na natančnost
-            orderBody.qty = floorToStep(finalAmount, lotFilter?.quotePrecision || '0.01');
-        } else {
-            const rWallet = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
-            const baseCoin = inst.result?.list?.[0]?.baseCoin || symbol.replace(/EUR|USDT|USDC/, '');
-            const coinData = (rWallet.result?.list?.[0]?.coin || []).find(c => c.coin === baseCoin);
-            const freeQty = num(coinData?.equity || coinData?.walletBalance);
-
-            if (freeQty <= 0) {
-                return fail(res, -432, `Nimate dovolj ${baseCoin} za prodajo.`);
-            }
-
-            orderBody.qty = floorToStep(freeQty, lotFilter?.basePrecision || '0.000001');
-        }
-
-        const order = await bybit('POST', '/v5/order/create', { body: orderBody });
-        return order.ok ? ok(res, order.result, `Naročilo uspešno izvedeno!`) : fail(res, order.code, order.message);
-    } catch (err) {
-        return fail(res, -500, `Napaka strežnika: ${err.message}`);
-    }
-});
-
-app.use('*', (req, res) => res.status(404).json({ status: 'error', code: 404, message: 'Pot ne obstaja.' }));
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 STREŽNIK TEČE NA PORTU ${PORT}`));
+        const items = list
+            .sort((a, b) => num(b.t.turnover24h) - num(a.t.turnover24h))
+            .slice(0, 5)
+            .map(({ t, quote }) => {
+                const chg = num(t.price24hPcnt) * 100;
+                let signal = 'HOLD', reasons = ['Trg stabilen (24h)'];
+                if (chg > 0.2) { signal = 'BUY'; reasons = [`Cena v 24h: +${chg.toFixed(2)}%`]; }
+                else if (chg < -0.2) { signal = 'SELL'; reasons = [`Cena v 24h: ${chg.toFixed(2)}%`]; }
+                return { symbol: t.symbol, quote, lastPrice: num(t.lastPrice), change24h: chg.toFixed(2), signal, reasons };
+            });
+        return ok(res, {
