@@ -5,53 +5,95 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bybit AI Terminal (Pro Panel)</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121214; color: #ffffff; padding: 15px; margin: 0; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121214; color: #fff; padding: 15px; margin: 0; }
         .container { max-width: 650px; margin: auto; }
         .card { background-color: #1e1e22; padding: 18px; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
         h2, h3 { margin-top: 0; color: #f7a600; font-size: 18px; }
         label { font-size: 13px; color: #aaa; display: block; margin-top: 10px; }
         input, select, button { width: 100%; padding: 12px; margin: 6px 0; border-radius: 4px; border: none; box-sizing: border-box; font-size: 16px; }
         input, select { background-color: #2b2b30; color: #fff; }
+        select option, select optgroup { background-color: #2b2b30; color: #fff; }
         button { font-weight: bold; cursor: pointer; transition: 0.2s; }
         button:disabled { opacity: 0.5; cursor: not-allowed; }
         .btn-connect { background-color: #f7a600; color: #000; }
         .btn-connect:hover { background-color: #e09600; }
-        .btn-buy { background-color: #4CAF50; color: #fff; width: 48%; float: left; }
-        .btn-sell { background-color: #f44336; color: #fff; width: 48%; float: right; }
+        .btn-buy { background-color: #2e7d32; color: #fff; }
+        .btn-sell { background-color: #b71c1c; color: #fff; }
+        .btn-buy.rec { background-color: #4CAF50; box-shadow: 0 0 0 2px #9be79f; }
+        .btn-sell.rec { background-color: #f44336; box-shadow: 0 0 0 2px #ffb3ad; }
+        .btn-grey { background-color: #44444c; color: #fff; }
         .btn-close-pos { background-color: #f44336; color: #fff; padding: 8px 12px; font-size: 12px; width: auto; margin: 0; }
-        .clear { clear: both; }
+        .mini { width: auto; padding: 6px 10px; font-size: 12px; margin: 0; background: #3a7bd5; color: #fff; }
+        .row2 { display: flex; gap: 8px; }
+        .row2 > * { flex: 1; min-width: 0; }
         .chk { display: flex; align-items: center; gap: 8px; color: #ddd; font-size: 13px; margin-top: 12px; }
         .chk input { width: auto; margin: 0; }
-        .status { margin-top: 15px; padding: 10px; border-radius: 4px; background: #2b2b30; word-break: break-word; font-size: 13px; }
-        .hint { color: #888; font-size: 12px; margin-top: 6px; }
+        .status { margin-top: 12px; padding: 10px; border-radius: 4px; background: #2b2b30; word-break: break-word; font-size: 13px; }
+        .infobox { background: #2b2b30; border-radius: 4px; padding: 12px; margin-top: 6px; font-size: 14px; display: flex; align-items: center; }
+        .hint { color: #888; font-size: 12px; margin-top: 4px; }
         .warn { color: #f7a600; font-size: 12px; margin-top: 8px; }
-        .signal-card { background: #26262c; padding: 14px; border-radius: 6px; margin-top: 10px; border-left: 5px solid #777; }
-        .signal-BUY { border-left-color: #4CAF50; }
-        .signal-SELL { border-left-color: #f44336; }
-        .signal-HOLD { border-left-color: #f7a600; }
-        .badge { font-weight: bold; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
-        .badge-BUY { background: #4CAF50; color: #fff; }
-        .badge-SELL { background: #f44336; color: #fff; }
-        .badge-HOLD { background: #44444c; color: #ddd; }
+        .pos { color: #4CAF50; }
+        .neg { color: #f44336; }
+        .dim { color: #777; }
+        .box { background: #26262c; padding: 12px; border-radius: 6px; margin-top: 8px; border-left: 5px solid #f7a600; font-size: 13px; line-height: 1.5; }
+        .box.err { border-left-color: #f44336; }
+        .box.s-BUY { border-left-color: #4CAF50; }
+        .box.s-SELL { border-left-color: #f44336; }
+        .head { display: flex; justify-content: space-between; align-items: baseline; }
+        .price { font-size: 18px; font-weight: bold; }
+        .sigrow { display: flex; align-items: center; gap: 10px; margin: 8px 0 4px; }
+        .badge { padding: 4px 10px; border-radius: 12px; font-weight: bold; font-size: 13px; }
+        .badge.BUY { background: #1b5e20; color: #b9f6ca; }
+        .badge.SELL { background: #7f1d1d; color: #ffcdd2; }
+        .badge.HOLD, .badge.NA { background: #44444c; color: #ddd; }
+        .reasons { margin: 4px 0 4px 18px; padding: 0; color: #bbb; font-size: 12px; }
+        .tradebtns { margin-top: 8px; }
+        .slot { margin-top: 8px; }
+        .posrow { background: #2b2b30; padding: 10px; border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
     </style>
 </head>
 <body>
-
 <div class="container">
+
     <div class="card">
         <h2>Bybit AI Terminal (Pro Panel)</h2>
 
         <label>Geslo aplikacije:</label>
         <input type="password" id="appPassword" placeholder="Vnesite geslo aplikacije" autocomplete="current-password">
 
-        <label>Znesek za vstop v trade (€):</label>
-        <input type="number" id="totalBudget" value="1.5" step="0.1" placeholder="Vnesite znesek">
-        <div class="hint">Toliko se porabi pri vsakem nakupu. Če je na računu manj, se porabi razpoložljivo.</div>
+        <div class="row2">
+            <div>
+                <label>Valuta trgovanja:</label>
+                <select id="quote">
+                    <option value="EUR">EUR</option>
+                    <option value="USDT">USDT</option>
+                    <option value="USDC">USDC</option>
+                </select>
+            </div>
+            <div>
+                <label>Privzeti znesek na trg:</label>
+                <input type="number" step="any" id="startAmount" placeholder="npr. 5">
+            </div>
+        </div>
+        <div class="row2">
+            <div>
+                <label>Časovnica analize:</label>
+                <select id="interval">
+                    <option value="5">5 minut</option>
+                    <option value="15" selected>15 minut</option>
+                    <option value="60">1 ura</option>
+                </select>
+            </div>
+            <div>
+                <label>&nbsp;</label>
+                <div class="infobox" id="totalInfo">Skupaj: –</div>
+            </div>
+        </div>
+        <div class="hint">Znesek lahko vpišete pri vsakem trgu posebej. Če je tam prazen, se uporabi privzeti.</div>
 
         <label class="chk"><input type="checkbox" id="autoTransfer" checked> Pri nakupu samodejno prenesi manjkajoča sredstva iz Funding v Unified</label>
 
-        <button class="btn-connect" id="connectBtn" onclick="connectAndFetch()">Poveži in zaženi terminal</button>
-
+        <button class="btn-connect" id="connectBtn">Poveži in zaženi terminal</button>
         <div class="status" id="statusBox">Status: <b>Čakam na povezavo...</b></div>
         <div class="warn" id="warnBox"></div>
     </div>
@@ -59,44 +101,66 @@
     <div class="card">
         <h3>Aktivne pozicije (vrednost)</h3>
         <div id="activePositionsContainer">
-            <div style="color: #777; text-align: center; padding: 10px;">Ni aktivnih pozicij ali pa ni povezano.</div>
+            <div class="dim" style="text-align:center; padding:10px;">Ni aktivnih pozicij ali pa ni povezano.</div>
         </div>
-        <div class="hint">Prikazana je vrednost v EUR. Dobiček ni izračunan, ker aplikacija nabavne cene ne hrani. Gumb ZAPRI proda vse, kar imate od tega kovanca na računu Unified.</div>
+        <div class="hint">Prikazana je vrednost v EUR. Dobiček ni izračunan, ker aplikacija nabavne cene ne hrani. ZAPRI proda vse, kar imate od tega kovanca na računu Unified.</div>
+    </div>
+
+    <div class="card" id="fundCard" style="display:none">
+        <h3>Sredstva na Funding računu</h3>
+        <div id="fundList"></div>
+        <div class="hint">Za trgovanje morajo biti sredstva na Unified. Prenesete jih z gumbom ali pa samodejno ob nakupu.</div>
     </div>
 
     <div class="card">
-        <h3>TOP 5 trgov po prometu (24h)</h3>
-        <div id="aiSignalsContainer">
-            <div style="color: #777; text-align: center; padding: 10px;">Vnesite geslo in kliknite Poveži...</div>
+        <h3>Dnevni izbor trgov</h3>
+        <label>Kako izbrati najbolj aktualne trge:</label>
+        <select id="pickMode">
+            <option value="ai">AI izbor (najmočnejši signali med prometnimi trgi)</option>
+            <option value="volume">Največji promet (24h)</option>
+            <option value="movers">Največje gibanje cene (24h)</option>
+        </select>
+        <label class="chk"><input type="checkbox" id="autoPick" checked> Samodejno izpolni 5 trgov (osveži se vsakih 5 min)</label>
+        <button class="btn-grey" id="refreshTopBtn">Osveži predloge zdaj</button>
+        <div class="hint" id="topState">Predlogi: čakam na povezavo</div>
+        <div class="hint">Če ročno izberete trg v meniju, se samodejni izbor izklopi.</div>
+    </div>
+
+    <div class="card">
+        <h3>5 trgov in AI analiza</h3>
+        <div class="hint">V meniju izberite današnji predlog ali "Drugo" za ročni vnos (npr. DOGE ali DOGEEUR). Desno vpišite znesek za ta trg. Signal je ocena iz EMA, MACD, RSI in momentuma. Ni napoved in dobiček ni zagotovljen.</div>
+        <div id="slots"></div>
+        <div class="row2" style="margin-top:10px">
+            <button class="btn-grey" id="startBtn">Zaženi analizo</button>
+            <button class="btn-grey" id="stopBtn">Ustavi</button>
         </div>
-        <div class="hint">Signal temelji samo na 24-urni spremembi cene. Ni napoved in dobiček ni zagotovljen.</div>
+        <div class="hint" id="monitorState">Analiza: ustavljena</div>
+        <div class="status" id="tradeStatus">Naročilo: <b>Pripravljeno</b></div>
     </div>
 </div>
 
 <script>
-    const BACKEND_URL = window.location.origin;
     const $ = id => document.getElementById(id);
     const esc = s => { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; };
+    const normSymbol = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const fmt = n => Number(n).toLocaleString('en-US', { maximumFractionDigits: 8, useGrouping: false });
     const eur = n => Number(n || 0).toFixed(2);
-    let autoScanInterval = null;
-    let busy = false;
+    const SIGNAL_LABEL = { BUY: 'KUPI', SELL: 'PRODAJ', HOLD: 'POČAKAJ', 'N/A': 'N/A' };
+    const QUOTES = ['USDT', 'USDC', 'EUR'];
+    const DEFAULT_SLOTS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB'];
+    const SLOT_IDX = [0, 1, 2, 3, 4];
+    const POLL_MS = 5000;
+    const TOP_MS = 5 * 60 * 1000;
 
-    // Shranjevanje nastavitev v brskalnik
-    try {
-        const saved = JSON.parse(localStorage.getItem('proPanel') || 'null');
-        if (saved) {
-            if (saved.budget) $('totalBudget').value = saved.budget;
-            if (typeof saved.auto === 'boolean') $('autoTransfer').checked = saved.auto;
-        }
-    } catch { /* brez shranjevanja */ }
-    function saveSettings() {
-        try { localStorage.setItem('proPanel', JSON.stringify({ budget: $('totalBudget').value, auto: $('autoTransfer').checked })); } catch { /* */ }
-    }
-    $('totalBudget').addEventListener('input', saveSettings);
-    $('autoTransfer').addEventListener('input', saveSettings);
+    const coins = DEFAULT_SLOTS.slice();
+    const manual = SLOT_IDX.map(() => false);
+    let topData = { items: [], held: [] };
+    let pollTimer = null, pollBusy = false, tradeBusy = false;
+    let topTimer = null, topBusy = false;
+    let lastItems = {};
 
     async function post(url, payload) {
-        const res = await fetch(BACKEND_URL + url, {
+        const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -106,13 +170,263 @@
         catch { throw new Error(`Odgovor ni JSON (HTTP ${res.status})`); }
     }
 
+    // ============ Trgi in zneski ============
+    function buildSlots() {
+        $('slots').innerHTML = SLOT_IDX.map(i => `
+            <div class="slot">
+                <label>Trg ${i + 1}</label>
+                <div class="row2">
+                    <select id="sel${i}" style="flex:2"></select>
+                    <input type="number" step="any" id="amt${i}" placeholder="znesek" style="flex:1">
+                </div>
+                <input type="text" id="slot${i}" autocapitalize="characters" placeholder="Kovanec ali par, npr. DOGE ali DOGEEUR" style="display:none">
+                <div id="res${i}"></div>
+            </div>`).join('');
+    }
+
+    function optionLabel(it) {
+        const ch = Number(it.change) || 0;
+        const sig = it.signal ? ` · ${SIGNAL_LABEL[it.signal] || it.signal}` : '';
+        return `${it.base}${sig} · ${ch >= 0 ? '+' : ''}${ch.toFixed(1)}%`;
+    }
+
+    function renderSelect(i) {
+        const sel = $('sel' + i);
+        const inp = $('slot' + i);
+        inp.style.display = manual[i] ? 'block' : 'none';
+        if (manual[i] && inp.value !== coins[i]) inp.value = coins[i] || '';
+        if (document.activeElement === sel) return; // ne spreminjaj menija med uporabo
+
+        const cur = normSymbol(coins[i]);
+        const itemBases = new Set(topData.items.map(x => x.base));
+        const heldOnly = topData.held.filter(h => !itemBases.has(h.base));
+        const listed = new Set([...itemBases, ...heldOnly.map(h => h.base)]);
+
+        let html = '<option value="">— izberi trg —</option>';
+        if (topData.items.length) {
+            html += '<optgroup label="Danes aktualni">'
+                + topData.items.map(it => `<option value="${esc(it.base)}">${esc(optionLabel(it))}</option>`).join('')
+                + '</optgroup>';
+        }
+        if (heldOnly.length) {
+            html += '<optgroup label="Imate na računu">'
+                + heldOnly.map(h => `<option value="${esc(h.base)}">${esc(h.base)} · ${esc(fmt(h.free))}</option>`).join('')
+                + '</optgroup>';
+        }
+        if (cur && !manual[i] && !listed.has(cur)) html += `<option value="${esc(cur)}">${esc(cur)} (izbrano)</option>`;
+        html += '<option value="__manual__">✎ Drugo (ročni vnos)…</option>';
+        sel.innerHTML = html;
+        sel.value = manual[i] ? '__manual__' : cur;
+    }
+
+    function toSymbol(raw) {
+        const s = normSymbol(raw);
+        if (!s) return '';
+        if (QUOTES.some(q => s.length > q.length && s.endsWith(q))) return s;
+        return s + $('quote').value;
+    }
+
+    const slotSymbol = i => toSymbol(coins[i]);
+    const activeSlots = () => SLOT_IDX.filter(i => slotSymbol(i));
+
+    function slotAmount(i) {
+        const own = parseFloat($('amt' + i).value);
+        if (own > 0) return own;
+        const def = parseFloat($('startAmount').value);
+        return def > 0 ? def : 0;
+    }
+
+    function updateTotal() {
+        const total = activeSlots().reduce((s, i) => s + slotAmount(i), 0);
+        $('totalInfo').innerHTML = total > 0
+            ? `Skupaj: <b>&nbsp;${esc(fmt(total))} ${esc($('quote').value)}</b>`
+            : 'Skupaj: –';
+        SLOT_IDX.forEach(i => { $('amt' + i).placeholder = $('startAmount').value ? `privzeto ${$('startAmount').value}` : 'znesek'; });
+    }
+
+    function saveSettings() {
+        try {
+            localStorage.setItem('proPanel2', JSON.stringify({
+                quote: $('quote').value, def: $('startAmount').value, interval: $('interval').value,
+                auto: $('autoTransfer').checked, pick: $('pickMode').value, autoPick: $('autoPick').checked,
+                slots: SLOT_IDX.map(i => ({ coin: coins[i], amt: $('amt' + i).value, manual: manual[i] }))
+            }));
+        } catch { /* brez shranjevanja */ }
+    }
+
+    function loadSettings() {
+        let s = null;
+        try { s = JSON.parse(localStorage.getItem('proPanel2') || 'null'); } catch { /* ni shranjeno */ }
+        if (s) {
+            if (s.quote) $('quote').value = s.quote;
+            if (s.def) $('startAmount').value = s.def;
+            if (s.interval) $('interval').value = s.interval;
+            if (typeof s.auto === 'boolean') $('autoTransfer').checked = s.auto;
+            if (s.pick) $('pickMode').value = s.pick;
+            if (typeof s.autoPick === 'boolean') $('autoPick').checked = s.autoPick;
+        }
+        const slots = (s && Array.isArray(s.slots) && s.slots.length)
+            ? s.slots : DEFAULT_SLOTS.map(c => ({ coin: c, amt: '', manual: false }));
+        SLOT_IDX.forEach(i => {
+            const v = slots[i] || {};
+            coins[i] = v.coin || '';
+            manual[i] = !!v.manual;
+            $('amt' + i).value = v.amt || '';
+            renderSelect(i);
+        });
+        updateTotal();
+    }
+
+    // ============ Dnevni izbor trgov ============
+    async function loadTop() {
+        if (topBusy) return;
+        const password = $('appPassword').value.trim();
+        if (!password) return;
+        topBusy = true;
+        $('topState').textContent = 'Iščem najbolj aktualne trge...';
+        try {
+            const d = await post('/api/top', { password, quote: $('quote').value, mode: $('pickMode').value, interval: $('interval').value });
+            if (d.status === 'success') {
+                topData = { items: d.data.items || [], held: d.data.held || [] };
+                let applied = false;
+                if ($('autoPick').checked && !tradeBusy) {
+                    topData.items.slice(0, 5).forEach((p, i) => { coins[i] = p.base; manual[i] = false; });
+                    applied = true;
+                    saveSettings();
+                }
+                SLOT_IDX.forEach(renderSelect);
+                updateTotal();
+                renderAll();
+                $('topState').textContent = `Predlogi osveženi ${new Date(d.data.ts).toLocaleTimeString()}`
+                    + ($('autoPick').checked ? ' · samodejni izbor vklopljen' : ' · samodejni izbor izklopljen');
+                if (applied && pollTimer) poll();
+            } else {
+                $('topState').textContent = `Predlogi: napaka (${d.code}): ${d.message}`;
+                if (d.code === 401 || d.code === 429) stopPolling();
+            }
+        } catch (err) {
+            $('topState').textContent = `Predlogi: napaka (${err.message})`;
+        } finally {
+            topBusy = false;
+        }
+    }
+
+    // ============ Prikaz signalov ============
+    function renderSlot(i) {
+        const symbol = slotSymbol(i);
+        const el = $('res' + i);
+        if (!symbol) { el.innerHTML = ''; return; }
+        const it = lastItems[symbol];
+        if (!it) { el.innerHTML = `<div class="box dim">${esc(symbol)}: čakam na podatke...</div>`; return; }
+        if (!it.ok) { el.innerHTML = `<div class="box err"><b>${esc(symbol)}</b>: ${esc(it.message || 'Ni podatkov')}</div>`; return; }
+
+        const ch = Number(it.change24h) || 0;
+        const sig = it.signal || 'N/A';
+        const sigClass = sig === 'N/A' ? 'NA' : sig;
+        const reasons = (it.reasons || []).map(r => `<li>${esc(r)}</li>`).join('');
+        const conf = it.confidence != null ? `zaupanje ${esc(it.confidence)}%` : '';
+        const rsi = it.rsi != null ? ` · RSI ${esc(it.rsi)}` : '';
+        const levels = (it.stop && it.target) ? `<div class="hint">Orientacijsko: cilj ${esc(it.target)} · stop ${esc(it.stop)}</div>` : '';
+        const held = it.held == null ? '' : `<div class="hint">Na Unified imate: ${esc(fmt(it.held))} ${esc(it.base)}</div>`;
+        const amt = slotAmount(i);
+        const amtText = amt > 0
+            ? `Znesek: <b>${esc(fmt(amt))} ${esc(it.quote || $('quote').value)}</b>`
+            : '<span class="neg">Vpišite znesek za ta trg (ali privzeti znesek)</span>';
+
+        el.innerHTML = `
+            <div class="box s-${esc(sigClass)}">
+                <div class="head"><b>${esc(symbol)}</b><span class="price">${esc(it.lastPrice)}</span></div>
+                <div>24h: <span class="${ch >= 0 ? 'pos' : 'neg'}">${ch >= 0 ? '+' : ''}${esc(ch.toFixed(2))}%</span>
+                    · Bid ${esc(it.bid)} / Ask ${esc(it.ask)}</div>
+                <div class="sigrow"><span class="badge ${esc(sigClass)}">${esc(SIGNAL_LABEL[sig] || sig)}</span><span>${conf}${rsi}</span></div>
+                <ul class="reasons">${reasons}</ul>
+                ${levels}${held}
+                <div>${amtText}</div>
+                <div class="row2 tradebtns">
+                    <button class="btn-buy ${sig === 'BUY' ? 'rec' : ''}" data-slot="${i}" data-symbol="${esc(symbol)}" data-side="Buy" ${tradeBusy ? 'disabled' : ''}>KUPI</button>
+                    <button class="btn-sell ${sig === 'SELL' ? 'rec' : ''}" data-slot="${i}" data-symbol="${esc(symbol)}" data-side="Sell" ${tradeBusy ? 'disabled' : ''}>PRODAJ</button>
+                </div>
+            </div>`;
+    }
+
+    function renderAll() { SLOT_IDX.forEach(renderSlot); }
+
+    // ============ Osveževanje (vsakih 5 s) ============
+    async function poll() {
+        if (pollBusy || document.hidden) return;
+        const password = $('appPassword').value.trim();
+        const symbols = [...new Set(activeSlots().map(slotSymbol))].slice(0, 5);
+        if (!password || !symbols.length) return;
+
+        pollBusy = true;
+        try {
+            const d = await post('/api/analyze', { password, interval: $('interval').value, symbols });
+            if (d.status === 'success') {
+                lastItems = {};
+                (d.data.items || []).forEach(it => { lastItems[it.symbol] = it; });
+                renderAll();
+                $('monitorState').textContent = `Analiza: teče, osveženo ${new Date(d.data.ts).toLocaleTimeString()}`;
+            } else {
+                $('monitorState').textContent = `Analiza: napaka (${d.code}): ${d.message}`;
+                if (d.code === 401 || d.code === 429) stopPolling();
+            }
+        } catch (err) {
+            $('monitorState').textContent = `Analiza: napaka (${err.message})`;
+        } finally {
+            pollBusy = false;
+        }
+    }
+
+    function startPolling() {
+        stopPolling();
+        poll();
+        pollTimer = setInterval(poll, POLL_MS);
+        topTimer = setInterval(loadTop, TOP_MS);
+    }
+
+    function stopPolling() {
+        if (pollTimer) clearInterval(pollTimer);
+        if (topTimer) clearInterval(topTimer);
+        pollTimer = null;
+        topTimer = null;
+        $('monitorState').textContent = 'Analiza: ustavljena';
+    }
+
+    // ============ Stanje in pozicije ============
+    function renderPositions(positions) {
+        const c = $('activePositionsContainer');
+        if (!positions || !positions.length) {
+            c.innerHTML = '<div class="dim" style="text-align:center; padding:8px;">Trenutno nimate odprtih aktivnih pozicij (vse je v gotovini).</div>';
+            return;
+        }
+        c.innerHTML = positions.map(pos => `
+            <div class="posrow">
+                <div>
+                    <b style="font-size:15px; color:#f7a600;">${esc(pos.symbol)}</b><br>
+                    <span style="font-size:12px; color:#aaa;">Količina: ${Number(pos.size).toFixed(6)}</span><br>
+                    <span style="font-size:13px;">Vrednost: €${eur(pos.eurValue)}</span>
+                </div>
+                <button class="btn-close-pos" data-close="${esc(pos.symbol)}">ZAPRI POZICIJO</button>
+            </div>`).join('');
+    }
+
+    function renderFunding(list) {
+        const items = (list || []).filter(c => c.total > 0);
+        $('fundCard').style.display = items.length ? 'block' : 'none';
+        $('fundList').innerHTML = items.map(c => `
+            <div class="posrow">
+                <div><b>${esc(c.coin)}</b> · skupaj ${esc(fmt(c.total))} · prosto ${esc(fmt(c.free))}</div>
+                ${c.free > 0 ? `<button class="mini" data-coin="${esc(c.coin)}" data-amount="${esc(fmt(c.free))}">→ Unified</button>` : ''}
+            </div>`).join('');
+    }
+
     async function connectAndFetch() {
         const password = $('appPassword').value.trim();
-        const statusBox = $('statusBox');
+        const box = $('statusBox');
         if (!password) { alert('Prosimo, vnesite geslo aplikacije!'); return false; }
 
-        statusBox.style.color = '#ffffff';
-        statusBox.textContent = 'Pridobivam podatke iz Bybita...';
+        box.style.color = '#fff';
+        box.textContent = 'Pridobivam podatke iz Bybita...';
         $('connectBtn').disabled = true;
 
         try {
@@ -120,32 +434,182 @@
             if (d.status === 'success' && d.data) {
                 const b = d.data;
                 const q = b.quoteFree || {};
-                statusBox.style.color = '#4CAF50';
-                statusBox.innerHTML = `<b>Povezano uspešno!</b><br>`
+                box.style.color = '#4CAF50';
+                box.innerHTML = `<b>Povezano uspešno!</b><br>`
                     + `Unified: <b>${eur(b.totalEquity)} EUR</b> · Funding: <b>${eur(b.fundingEquity)} EUR</b><br>`
                     + `Prosto za nakup na Unified: ${eur(q.EUR)} EUR · ${eur(q.USDT)} USDT · ${eur(q.USDC)} USDC`;
                 $('warnBox').innerHTML = (b.warnings && b.warnings.length) ? 'Opozorila:<br>' + b.warnings.map(esc).join('<br>') : '';
-                renderActivePositions(b.activePositions || []);
-                startAIScanner();
+                renderPositions(b.activePositions || []);
+                renderFunding(b.funding || []);
                 return true;
             }
-            statusBox.style.color = '#f44336';
-            statusBox.innerHTML = `<b>Napaka (${esc(d.code ?? 'N/A')}):</b> ${esc(d.message || 'Neznana napaka')}`;
+            box.style.color = '#f44336';
+            box.innerHTML = `<b>Napaka (${esc(d.code ?? 'N/A')}):</b> ${esc(d.message || 'Neznana napaka')}`;
             return false;
         } catch (err) {
-            statusBox.style.color = '#f44336';
-            statusBox.innerHTML = `<b>Napaka:</b> ${esc(err.message)}`;
+            box.style.color = '#f44336';
+            box.innerHTML = `<b>Napaka:</b> ${esc(err.message)}`;
             return false;
         } finally {
             $('connectBtn').disabled = false;
         }
     }
 
-    function renderActivePositions(positions) {
-        const container = $('activePositionsContainer');
-        if (!positions || positions.length === 0) {
-            container.innerHTML = '<div style="color: #777; text-align: center; padding: 8px;">Trenutno nimate odprtih aktivnih pozicij (vse je v gotovini).</div>';
-            return;
+    // Prenos Funding → Unified
+    $('fundList').addEventListener('click', async e => {
+        const btn = e.target.closest('button[data-coin]');
+        if (!btn) return;
+        const password = $('appPassword').value.trim();
+        const coin = btn.dataset.coin, amount = btn.dataset.amount;
+        if (!password) return alert('Najprej vnesite geslo!');
+        if (!confirm(`Prenos ${amount} ${coin}: Funding → Unified?\n\nDenar ostane na vašem Bybit računu.`)) return;
+        const box = $('statusBox');
+        box.style.color = '#fff';
+        box.textContent = 'Izvajam prenos...';
+        try {
+            const d = await post('/api/transfer', { password, coin, amount, from: 'FUND', to: 'UNIFIED' });
+            if (d.status === 'success') await connectAndFetch();
+            else { box.style.color = '#f44336'; box.innerHTML = `<b>Napaka pri prenosu (${esc(d.code)}):</b> ${esc(d.message)}`; }
+        } catch (err) {
+            box.style.color = '#f44336';
+            box.innerHTML = `<b>Napaka:</b> ${esc(err.message)}`;
         }
-        container.innerHTML = positions.map(pos => `
-            <div style="background: #2b2b30; padding: 10px; border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between;
+    });
+
+    // ============ Trgovanje ============
+    async function sendTrade({ symbol, side, amount, sellAll }) {
+        if (tradeBusy) return;
+        const password = $('appPassword').value.trim();
+        const box = $('tradeStatus');
+        tradeBusy = true;
+        renderAll();
+        box.style.color = '#fff';
+        box.textContent = `Pošiljam ${side === 'Buy' ? 'nakup' : 'prodajo'} za ${symbol}...`;
+        try {
+            const d = await post('/api/trade', {
+                password, symbol, side,
+                amount: String(amount || 0),
+                sellAll: !!sellAll,
+                autoTransfer: $('autoTransfer').checked
+            });
+            if (d.status === 'success') {
+                box.style.color = '#4CAF50';
+                box.innerHTML = `<b>Naročilo oddano!</b><br>${esc(d.message)}`;
+                await connectAndFetch();
+                setTimeout(() => { connectAndFetch(); poll(); loadTop(); }, 3000);
+            } else {
+                box.style.color = '#f44336';
+                box.innerHTML = `<b>Napaka pri naročilu (${esc(d.code ?? 'N/A')}):</b> ${esc(d.message)}`;
+            }
+        } catch (err) {
+            box.style.color = '#f44336';
+            box.innerHTML = `<b>Napaka:</b> ${esc(err.message)}`;
+        } finally {
+            tradeBusy = false;
+            renderAll();
+        }
+    }
+
+    function tradeFromSlot(slotIndex, side, symbolAtRender) {
+        if (tradeBusy) return;
+        if (!$('appPassword').value.trim()) return alert('Najprej vnesite geslo!');
+        const symbol = slotSymbol(slotIndex);
+        const amount = slotAmount(slotIndex);
+        if (!symbol) return alert('Izberite trg!');
+        if (symbol !== symbolAtRender) {
+            renderAll();
+            return alert(`Trg se je medtem zamenjal (${symbolAtRender} → ${symbol}). Preverite izbiro in poskusite znova.`);
+        }
+        if (!(amount > 0)) return alert('Vpišite znesek za ta trg (ali privzeti znesek)!');
+
+        const it = lastItems[symbol];
+        const quote = it?.quote || $('quote').value;
+        const want = side === 'Buy' ? 'BUY' : 'SELL';
+        const warn = (it?.signal && it.signal !== 'N/A' && it.signal !== want)
+            ? `\n\nOpozorilo: signal za ta trg je ${SIGNAL_LABEL[it.signal]}, ne ${SIGNAL_LABEL[want]}.` : '';
+        const text = side === 'Buy'
+            ? `KUPI ${symbol} za ${fmt(amount)} ${quote} po tržni ceni?`
+            : `PRODAJ ${symbol} v vrednosti do ${fmt(amount)} ${quote} (največ, kar imate na Unified) po tržni ceni?`;
+        if (!confirm(`${text}${warn}\n\nTo je pravi denar na pravem računu.`)) return;
+        sendTrade({ symbol, side, amount, sellAll: false });
+    }
+
+    function closePosition(symbol) {
+        if (tradeBusy) return;
+        if (!$('appPassword').value.trim()) return alert('Najprej vnesite geslo!');
+        if (!confirm(`PRODAJ VSE, kar imate od ${symbol} na računu Unified, po tržni ceni?\n\nTo je pravi denar na pravem računu.`)) return;
+        sendTrade({ symbol, side: 'Sell', amount: 0, sellAll: true });
+    }
+
+    $('slots').addEventListener('click', e => {
+        const btn = e.target.closest('button[data-side]');
+        if (btn) tradeFromSlot(parseInt(btn.dataset.slot, 10), btn.dataset.side, btn.dataset.symbol);
+    });
+    $('activePositionsContainer').addEventListener('click', e => {
+        const btn = e.target.closest('button[data-close]');
+        if (btn) closePosition(btn.dataset.close);
+    });
+
+    // ============ Dogodki ============
+    $('connectBtn').addEventListener('click', async () => {
+        const good = await connectAndFetch();
+        if (good) {
+            await loadTop();
+            startPolling();
+        }
+    });
+    $('startBtn').addEventListener('click', () => {
+        if (!$('appPassword').value.trim()) return alert('Najprej vnesite geslo!');
+        startPolling();
+    });
+    $('stopBtn').addEventListener('click', stopPolling);
+    $('refreshTopBtn').addEventListener('click', () => {
+        if (!$('appPassword').value.trim()) return alert('Najprej vnesite geslo!');
+        loadTop();
+    });
+
+    let debounce = null;
+    function onSettingsChange() {
+        updateTotal();
+        saveSettings();
+        renderAll();
+        clearTimeout(debounce);
+        debounce = setTimeout(() => { if (pollTimer) poll(); }, 600);
+    }
+
+    ['startAmount', 'autoTransfer'].forEach(id => $(id).addEventListener('input', onSettingsChange));
+    ['quote', 'interval', 'pickMode', 'autoPick'].forEach(id => $(id).addEventListener('change', () => {
+        onSettingsChange();
+        if ($('appPassword').value.trim() && (id !== 'interval' || $('pickMode').value === 'ai')) loadTop();
+    }));
+
+    SLOT_IDX.forEach(i => {
+        $('sel' + i).addEventListener('change', e => {
+            const v = e.target.value;
+            $('autoPick').checked = false; // ročna izbira izklopi samodejni izbor
+            if (v === '__manual__') {
+                manual[i] = true;
+                renderSelect(i);
+                $('slot' + i).focus();
+            } else {
+                manual[i] = false;
+                coins[i] = v;
+                renderSelect(i);
+            }
+            onSettingsChange();
+        });
+        $('slot' + i).addEventListener('input', e => {
+            coins[i] = e.target.value;
+            $('autoPick').checked = false;
+            onSettingsChange();
+        });
+        $('amt' + i).addEventListener('input', onSettingsChange);
+    });
+
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && pollTimer) poll(); });
+
+    buildSlots();
+    loadSettings();
+</script>
+</body>
+</html>
