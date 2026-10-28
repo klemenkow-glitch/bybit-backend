@@ -80,7 +80,7 @@ async function publicGet(apiPath, query = '') {
     }
 }
 
-// STANJE IN PREMOŽENJE V EUR
+// 1. STANJE IN PREMOŽENJE
 app.post('/api/balance', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -108,22 +108,13 @@ app.post('/api/balance', async (req, res) => {
                     eurVal = total * price;
                 }
             }
-            
             totalEquityEur += eurVal;
 
-            return {
-                coin: c.coin,
-                account: 'UNIFIED',
-                total: total,
-                free: num(c.equity),
-                eurValue: eurVal
-            };
+            return { coin: c.coin, account: 'UNIFIED', total, free: num(c.equity), eurValue: eurVal };
         });
 
         const totalEquityApi = num(r.result?.list?.[0]?.totalEquity);
-        if (totalEquityApi > 0) {
-            totalEquityEur = totalEquityApi;
-        }
+        if (totalEquityApi > 0) totalEquityEur = totalEquityApi;
 
         const activePositions = coins.filter(c => 
             c.coin !== 'USDT' && c.coin !== 'EUR' && c.coin !== 'USDC' && c.total > 0.001
@@ -131,31 +122,20 @@ app.post('/api/balance', async (req, res) => {
             const pairUsdt = c.coin + 'USDT';
             const pairEur = c.coin + 'EUR';
             const symbol = tickersMap[pairEur] ? pairEur : pairUsdt;
-            
-            return {
-                symbol: symbol,
-                coin: c.coin,
-                size: c.total,
-                eurValue: c.eurValue
-            };
+            return { symbol, coin: c.coin, size: c.total, eurValue: c.eurValue };
         });
 
-        return ok(res, { 
-            totalEquity: totalEquityEur, 
-            currency: 'EUR',
-            coins, 
-            activePositions 
-        });
+        return ok(res, { totalEquity: totalEquityEur, currency: 'EUR', coins, activePositions });
     } catch (err) {
         return fail(res, -500, err.message);
     }
 });
 
+// 2. AI ANALIZA TRGA
 app.post('/api/analyze', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         const totalBudget = num(req.body?.totalAmount) || 5;
-        
         const tickers = await publicGet('/v5/market/tickers', 'category=spot');
         
         let items = [];
@@ -169,28 +149,19 @@ app.post('/api/analyze', async (req, res) => {
                 .map(t => {
                     const price = num(t.lastPrice);
                     const chg = num(t.price24hPcnt) * 100;
-                    
-                    let signal = 'HOLD';
-                    let reasons = ['Trg stabilen'];
+                    let signal = 'HOLD', reasons = ['Trg stabilen'];
                     if (chg > 0.2) { signal = 'BUY'; reasons = ['Momentum rasti (+24h)']; }
                     else if (chg < -0.2) { signal = 'SELL'; reasons = ['Pritisk prodajalcev (-24h)']; }
-
-                    return {
-                        symbol: t.symbol,
-                        lastPrice: price,
-                        change24h: chg.toFixed(2),
-                        signal: signal,
-                        reasons: reasons
-                    };
+                    return { symbol: t.symbol, lastPrice: price, change24h: chg.toFixed(2), signal, reasons };
                 });
         }
-
         return ok(res, { items, fullAmount: totalBudget, ts: Date.now() });
     } catch (err) {
         return fail(res, -500, err.message);
     }
 });
 
+// 3. VARNO IZVAJANJE TRGOVANJA (ODPRAVLJENE NAPAKE PARAMETROV)
 app.post('/api/trade', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -209,23 +180,23 @@ app.post('/api/trade', async (req, res) => {
         const inst = await publicGet('/v5/market/instruments-info', `category=spot&symbol=${symbol}`);
         const lotFilter = inst.result?.list?.[0]?.lotSizeFilter;
         
-        let orderBody = { category: 'spot', symbol, side, orderType: 'Market' };
+        // Čist in veljaven objekt za naročilo, brez praznih ali neveljavnih parametrov
+        let orderBody = {
+            category: 'spot',
+            symbol: symbol,
+            side: side,
+            orderType: 'Market'
+        };
 
         if (side === 'Buy') {
             const rWallet = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
             const coinsList = rWallet.result?.list?.[0]?.coin || [];
-            
             const eurCoin = coinsList.find(c => c.coin === 'EUR');
-            const usdtCoin = coinsList.find(c => c.coin === 'USDT');
-            
             const freeEur = num(eurCoin?.equity || eurCoin?.walletBalance);
-            const freeUsdt = num(usdtCoin?.equity || usdtCoin?.walletBalance);
 
             let finalAmount = amount;
-            if (symbol.endsWith('EUR') && freeEur > 0 && freeEur < amount) {
+            if (freeEur > 0 && freeEur < amount) {
                 finalAmount = freeEur;
-            } else if (symbol.endsWith('USDT') && freeUsdt > 0 && freeUsdt < amount) {
-                finalAmount = freeUsdt;
             }
 
             const minOrderAmt = num(lotFilter?.minOrderAmt || '1');
@@ -235,9 +206,7 @@ app.post('/api/trade', async (req, res) => {
                 orderBody.qty = floorToStep(finalAmount / price, lotFilter?.basePrecision || '0.000001');
                 orderBody.marketUnit = 'baseCoin';
             } else {
-                if (finalAmount < minOrderAmt) {
-                    finalAmount = minOrderAmt;
-                }
+                if (finalAmount < minOrderAmt) finalAmount = minOrderAmt;
                 orderBody.qty = floorToStep(finalAmount, lotFilter?.quotePrecision || '0.01');
                 orderBody.marketUnit = 'quoteCoin';
             }
@@ -251,8 +220,7 @@ app.post('/api/trade', async (req, res) => {
                 return fail(res, -432, `Nimate dovolj ${baseCoin} za prodajo.`);
             }
 
-            const qtyBase = floorToStep(freeQty, lotFilter?.basePrecision || '0.000001');
-            orderBody.qty = qtyBase;
+            orderBody.qty = floorToStep(freeQty, lotFilter?.basePrecision || '0.000001');
             orderBody.marketUnit = 'baseCoin';
         }
 
