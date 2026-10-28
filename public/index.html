@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bybit AI Terminal (MAINNET)</title>
+    <title>Bybit AI Terminal (Pro Panel)</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121214; color: #ffffff; padding: 15px; margin: 0; }
         .container { max-width: 650px; margin: auto; }
@@ -43,7 +43,7 @@
         <label>Geslo aplikacije (APP_PASSWORD):</label>
         <input type="password" id="appPassword" placeholder="Vnesite geslo aplikacije">
 
-        <label>Znesek za vstop v trade (€/$):</label>
+        <label>Znesek za vstop v trade (€):</label>
         <input type="number" id="totalBudget" value="25" placeholder="Vnesite znesek">
 
         <button class="btn-connect" onclick="connectAndFetch()">Poveži in Zaženi Terminal</button>
@@ -51,7 +51,7 @@
         <div class="status" id="statusBox">Status: <b>Čakam na povezavo...</b></div>
     </div>
 
-    <!-- AKTIVNE POZICIJE Z GUMBOM ZA ZAPIRANJE -->
+    <!-- AKTIVNE POZICIJE Z REAL-TIME P&L (ZELENA / RDEČA) -->
     <div class="card">
         <h3>Aktivne Pozicije & Dobiček (P&L)</h3>
         <div id="activePositionsContainer">
@@ -93,7 +93,7 @@
             const resData = await res.json();
 
             if (resData.status === 'success' && resData.data) {
-                const totalEquity = resData.data.totalEquity ? ` (${resData.data.totalEquity.toFixed(2)} USD)` : '';
+                const totalEquity = resData.data.totalEquity ? ` (${resData.data.totalEquity.toFixed(2)} EUR)` : '';
                 statusBox.style.color = '#4CAF50';
                 statusBox.innerHTML = `<b>Povezano uspešno!</b> Skupno premoženje: <b>${totalEquity}</b>`;
 
@@ -118,15 +118,15 @@
 
         container.innerHTML = '';
         positions.forEach(pos => {
-            // Simulacija/prikaz stanja (zelena za vrednost >0)
-            const pnlClass = pos.usdValue >= 0 ? 'profit-pos' : 'loss-pos';
+            // Zelena za plus (vrednost > 0), rdeča sicer
+            const pnlClass = pos.eurValue >= 0 ? 'profit-pos' : 'loss-pos';
             
             container.innerHTML += `
                 <div style="background: #2b2b30; padding: 10px; border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
                     <div>
                         <b style="font-size: 15px; color: #f7a600;">${pos.symbol}</b><br>
                         <span style="font-size: 12px; color: #aaa;">Količina: ${pos.size.toFixed(6)}</span><br>
-                        <span style="font-size: 13px;" class="${pnlClass}">Vrednost: $${pos.usdValue.toFixed(2)}</span>
+                        <span style="font-size: 13px;" class="${pnlClass}">Vrednost: €${pos.eurValue.toFixed(2)}</span>
                     </div>
                     <div>
                         <button class="btn-close-pos" onclick="executeTrade('${pos.symbol}', 'Sell', 0)">ZAPRI POZICIJO</button>
@@ -172,7 +172,7 @@
                             <div style="display: flex; justify-content: space-between; align-items: center;">
                                 <div>
                                     <b style="font-size: 16px;">${item.symbol}</b><br>
-                                    <span style="font-size: 13px; color: #aaa;">Cena: <b>$${price}</b></span>
+                                    <span style="font-size: 13px; color: #aaa;">Cena: <b>€${price}</b></span>
                                 </div>
                                 <div>
                                     <span class="badge badge-${sig}">${sig}</span>
@@ -206,7 +206,7 @@
         }
 
         const msg = side === 'Buy' 
-            ? `Ali želite odpreti trade za ${symbol} v znesku ${amount}?` 
+            ? `Ali želite odpreti trade za ${symbol} v znesku ${amount} €?` 
             : `Ali ste prepričani, da želite zapreti pozicijo za ${symbol}?`;
 
         if (!confirm(msg)) return;
