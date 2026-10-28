@@ -161,7 +161,7 @@ app.post('/api/analyze', async (req, res) => {
     }
 });
 
-// 3. VARNO IZVAJANJE TRGOVANJA (ODPRAVLJENE NAPAKE PARAMETROV)
+// 3. POPOLNOMA OČIŠČENO NAROČILO (BREZ NAPAKE 170130)
 app.post('/api/trade', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
@@ -180,7 +180,6 @@ app.post('/api/trade', async (req, res) => {
         const inst = await publicGet('/v5/market/instruments-info', `category=spot&symbol=${symbol}`);
         const lotFilter = inst.result?.list?.[0]?.lotSizeFilter;
         
-        // Čist in veljaven objekt za naročilo, brez praznih ali neveljavnih parametrov
         let orderBody = {
             category: 'spot',
             symbol: symbol,
@@ -200,16 +199,10 @@ app.post('/api/trade', async (req, res) => {
             }
 
             const minOrderAmt = num(lotFilter?.minOrderAmt || '1');
-            const minOrderQty = num(lotFilter?.minOrderQty || '0.00001');
+            if (finalAmount < minOrderAmt) finalAmount = minOrderAmt;
 
-            if (finalAmount < minOrderAmt && finalAmount * price >= minOrderQty) {
-                orderBody.qty = floorToStep(finalAmount / price, lotFilter?.basePrecision || '0.000001');
-                orderBody.marketUnit = 'baseCoin';
-            } else {
-                if (finalAmount < minOrderAmt) finalAmount = minOrderAmt;
-                orderBody.qty = floorToStep(finalAmount, lotFilter?.quotePrecision || '0.01');
-                orderBody.marketUnit = 'quoteCoin';
-            }
+            // Pošljemo količino direktno kot qty glede na natančnost
+            orderBody.qty = floorToStep(finalAmount, lotFilter?.quotePrecision || '0.01');
         } else {
             const rWallet = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
             const baseCoin = inst.result?.list?.[0]?.baseCoin || symbol.replace(/EUR|USDT|USDC/, '');
@@ -221,7 +214,6 @@ app.post('/api/trade', async (req, res) => {
             }
 
             orderBody.qty = floorToStep(freeQty, lotFilter?.basePrecision || '0.000001');
-            orderBody.marketUnit = 'baseCoin';
         }
 
         const order = await bybit('POST', '/v5/order/create', { body: orderBody });
