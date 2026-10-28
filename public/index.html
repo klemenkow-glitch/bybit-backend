@@ -5,10 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bybit AI Terminal (MAINNET)</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121214; color: #ffffff; padding: 20px; margin: 0; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121214; color: #ffffff; padding: 15px; margin: 0; }
         .container { max-width: 650px; margin: auto; }
-        .card { background-color: #1e1e22; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
-        h2, h3 { margin-top: 0; color: #f7a600; }
+        .card { background-color: #1e1e22; padding: 18px; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+        h2, h3 { margin-top: 0; color: #f7a600; font-size: 18px; }
         label { font-size: 13px; color: #aaa; display: block; margin-top: 10px; }
         input, select, button { width: 100%; padding: 12px; margin: 6px 0; border-radius: 4px; border: none; box-sizing: border-box; font-size: 14px; }
         input, select { background-color: #2b2b30; color: #fff; }
@@ -16,11 +16,10 @@
         .btn-connect { background-color: #f7a600; color: #000; }
         .btn-connect:hover { background-color: #e09600; }
         .btn-buy { background-color: #4CAF50; color: #fff; width: 48%; float: left; }
-        .btn-buy:hover { background-color: #45a049; }
         .btn-sell { background-color: #f44336; color: #fff; width: 48%; float: right; }
-        .btn-sell:hover { background-color: #da190b; }
+        .btn-close-pos { background-color: #f44336; color: #fff; padding: 8px 12px; font-size: 12px; width: auto; margin: 0; }
         .clear { clear: both; }
-        .status { margin-top: 15px; padding: 12px; border-radius: 4px; background: #2b2b30; word-break: break-all; font-size: 13px; }
+        .status { margin-top: 15px; padding: 10px; border-radius: 4px; background: #2b2b30; word-break: break-all; font-size: 13px; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { text-align: left; padding: 8px; border-bottom: 1px solid #333; font-size: 13px; }
         th { color: #f7a600; }
@@ -31,45 +30,37 @@
         .badge { font-weight: bold; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
         .badge-BUY { background: #4CAF50; color: #fff; }
         .badge-SELL { background: #f44336; color: #fff; }
-        .badge-HOLD { background: #f7a600; color: #000; }
+        .profit-pos { color: #4CAF50; font-weight: bold; }
+        .loss-pos { color: #f44336; font-weight: bold; }
     </style>
 </head>
 <body>
 
 <div class="container">
     <div class="card">
-        <h2>Bybit AI Terminal (MAINNET)</h2>
+        <h2>Bybit AI Terminal (Pro Panel)</h2>
         
         <label>Geslo aplikacije (APP_PASSWORD):</label>
         <input type="password" id="appPassword" placeholder="Vnesite geslo aplikacije">
 
-        <label>Znesek za trgovanje (€/$):</label>
+        <label>Znesek za vstop v trade (€/$):</label>
         <input type="number" id="totalBudget" value="25" placeholder="Vnesite znesek">
 
-        <button class="btn-connect" onclick="connectAndFetch()">Poveži in Osveži Stanje</button>
+        <button class="btn-connect" onclick="connectAndFetch()">Poveži in Zaženi Terminal</button>
 
         <div class="status" id="statusBox">Status: <b>Čakam na povezavo...</b></div>
     </div>
 
+    <!-- AKTIVNE POZICIJE Z GUMBOM ZA ZAPIRANJE -->
     <div class="card">
-        <h3>Vaša Sredstva na Bybitu</h3>
-        <table>
-            <thead>
-                <tr>
-                    <th>Valuta</th>
-                    <th>Račun</th>
-                    <th>Skupno</th>
-                    <th>Na voljo</th>
-                </tr>
-            </thead>
-            <tbody id="balanceTable">
-                <tr><td colspan="4" style="text-align:center; color:#777;">Vnesite geslo zgoraj.</td></tr>
-            </tbody>
-        </table>
+        <h3>Aktivne Pozicije & Dobiček (P&L)</h3>
+        <div id="activePositionsContainer">
+            <div style="color: #777; text-align: center; padding: 10px;">Ni aktivnih pozicij ali pa ni povezano.</div>
+        </div>
     </div>
 
     <div class="card">
-        <h3>TOP 5 AI Trgovalni Signali (Real-Time)</h3>
+        <h3>TOP 5 AI Priložnosti za Trgovanje</h3>
         <div id="aiSignalsContainer">
             <div style="color: #777; text-align: center; padding: 10px;">Vnesite geslo in kliknite Poveži...</div>
         </div>
@@ -83,7 +74,6 @@
     async function connectAndFetch() {
         const password = document.getElementById('appPassword').value.trim();
         const statusBox = document.getElementById('statusBox');
-        const balanceTable = document.getElementById('balanceTable');
 
         if (!password) {
             alert('Prosimo, vnesite geslo aplikacije!');
@@ -91,7 +81,7 @@
         }
 
         statusBox.style.color = '#ffffff';
-        statusBox.innerHTML = 'Pridobivam stanje iz Bybita...';
+        statusBox.innerHTML = 'Pridobivam podatke iz Bybita...';
 
         try {
             const res = await fetch(`${BACKEND_URL}/api/balance`, {
@@ -105,25 +95,9 @@
             if (resData.status === 'success' && resData.data) {
                 const totalEquity = resData.data.totalEquity ? ` (${resData.data.totalEquity.toFixed(2)} USD)` : '';
                 statusBox.style.color = '#4CAF50';
-                statusBox.innerHTML = `<b>Povezano uspešno!</b> Stanje: <b>${totalEquity}</b>`;
+                statusBox.innerHTML = `<b>Povezano uspešno!</b> Skupno premoženje: <b>${totalEquity}</b>`;
 
-                const coins = resData.data.coins || [];
-                if (coins.length > 0) {
-                    balanceTable.innerHTML = '';
-                    coins.forEach(c => {
-                        balanceTable.innerHTML += `
-                            <tr>
-                                <td><b>${c.coin}</b></td>
-                                <td>${c.account}</td>
-                                <td>${c.total.toFixed(4)}</td>
-                                <td>${c.free.toFixed(4)}</td>
-                            </tr>
-                        `;
-                    });
-                } else {
-                    balanceTable.innerHTML = '<tr><td colspan="4" style="text-align:center;">Na računu ni sredstev z vrednostjo nad 0.</td></tr>';
-                }
-
+                renderActivePositions(resData.data.activePositions || []);
                 startAIScanner();
             } else {
                 statusBox.style.color = '#f44336';
@@ -135,10 +109,37 @@
         }
     }
 
+    function renderActivePositions(positions) {
+        const container = document.getElementById('activePositionsContainer');
+        if (!positions || positions.length === 0) {
+            container.innerHTML = '<div style="color: #777; text-align: center; padding: 8px;">Trenutno nimate odprtih aktivnih pozicij (vse je v gotovini).</div>';
+            return;
+        }
+
+        container.innerHTML = '';
+        positions.forEach(pos => {
+            // Simulacija/prikaz stanja (zelena za vrednost >0)
+            const pnlClass = pos.usdValue >= 0 ? 'profit-pos' : 'loss-pos';
+            
+            container.innerHTML += `
+                <div style="background: #2b2b30; padding: 10px; border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <b style="font-size: 15px; color: #f7a600;">${pos.symbol}</b><br>
+                        <span style="font-size: 12px; color: #aaa;">Količina: ${pos.size.toFixed(6)}</span><br>
+                        <span style="font-size: 13px;" class="${pnlClass}">Vrednost: $${pos.usdValue.toFixed(2)}</span>
+                    </div>
+                    <div>
+                        <button class="btn-close-pos" onclick="executeTrade('${pos.symbol}', 'Sell', 0)">ZAPRI POZICIJO</button>
+                    </div>
+                </div>
+            `;
+        });
+    }
+
     function startAIScanner() {
         if (autoScanInterval) clearInterval(autoScanInterval);
         runAnalysis();
-        autoScanInterval = setInterval(runAnalysis, 3000);
+        autoScanInterval = setInterval(runAnalysis, 4000);
     }
 
     async function runAnalysis() {
@@ -163,16 +164,14 @@
 
                 items.forEach(item => {
                     const sig = item.signal || 'HOLD';
-                    const priceVal = parseFloat(item.lastPrice || 0);
-                    const price = priceVal > 0 ? (priceVal < 10 ? priceVal.toFixed(4) : priceVal.toFixed(2)) : '0.00';
+                    const price = item.lastPrice > 0 ? (item.lastPrice < 10 ? item.lastPrice.toFixed(4) : item.lastPrice.toFixed(2)) : '0.00';
                     const reasons = (item.reasons || []).join(' | ');
 
                     container.innerHTML += `
                         <div class="signal-card signal-${sig}">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
                                 <div>
-                                    <b style="font-size: 16px;">${item.symbol}</b>
-                                    <br>
+                                    <b style="font-size: 16px;">${item.symbol}</b><br>
                                     <span style="font-size: 13px; color: #aaa;">Cena: <b>$${price}</b></span>
                                 </div>
                                 <div>
@@ -181,12 +180,12 @@
                             </div>
                             
                             <div style="font-size: 11px; color: #ccc; margin: 8px 0;">
-                                AI Kazalniki: ${reasons}
+                                AI Analiza: ${reasons}
                             </div>
 
                             <div style="margin-top: 10px;">
-                                <button class="btn-buy" onclick="executeTrade('${item.symbol}', 'Buy', '${fullAmt}')">KUPI (BUY)</button>
-                                <button class="btn-sell" onclick="executeTrade('${item.symbol}', 'Sell', '${fullAmt}')">PRODAJ (SELL)</button>
+                                <button class="btn-buy" onclick="executeTrade('${item.symbol}', 'Buy', '${fullAmt}')">ODPRI TRADE (KUPI)</button>
+                                <button class="btn-sell" onclick="executeTrade('${item.symbol}', 'Sell', '${fullAmt}')">ZAPRI / PRODAJ</button>
                                 <div class="clear"></div>
                             </div>
                         </div>
@@ -194,7 +193,7 @@
                 });
             }
         } catch (err) {
-            console.log('Spremljanje:', err.message);
+            console.log('Osveževanje:', err.message);
         }
     }
 
@@ -207,8 +206,8 @@
         }
 
         const msg = side === 'Buy' 
-            ? `Ali želite kupiti ${symbol} v znesku ${amount} €?` 
-            : `Ali želite prodati celotno količino ${symbol} nazaj v denar?`;
+            ? `Ali želite odpreti trade za ${symbol} v znesku ${amount}?` 
+            : `Ali ste prepričani, da želite zapreti pozicijo za ${symbol}?`;
 
         if (!confirm(msg)) return;
 
