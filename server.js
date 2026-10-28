@@ -80,12 +80,17 @@ async function publicGet(apiPath, query = '') {
     }
 }
 
+// STANJE, PREMOŽENJE V EUR IN AKTIVNE POZICIJE S P&L
 app.post('/api/balance', async (req, res) => {
     try {
         if (!checkAuth(req, res)) return;
         const r = await bybit('GET', '/v5/account/wallet-balance', { query: 'accountType=UNIFIED' });
         const rawCoins = r.result?.list?.[0]?.coin || [];
         
+        const totalEquityUsd = num(r.result?.list?.[0]?.totalEquity);
+        const eurCoinData = rawCoins.find(c => c.coin === 'EUR');
+        const totalEquityEur = num(eurCoinData?.equity || eurCoinData?.walletBalance) || (totalEquityUsd * 0.92);
+
         const tickersRes = await publicGet('/v5/market/tickers', 'category=spot');
         const tickersMap = {};
         if (tickersRes.ok && Array.isArray(tickersRes.result?.list)) {
@@ -101,20 +106,21 @@ app.post('/api/balance', async (req, res) => {
             if (coinName !== 'USDT' && coinName !== 'EUR' && coinName !== 'USDC') {
                 currentPrice = tickersMap[coinName + 'USDT'] || tickersMap[coinName + 'EUR'] || 0;
             }
-            const usdValue = total * currentPrice;
+            const eurValue = total * (currentPrice > 0 ? (coinName === 'EUR' ? 1 : currentPrice * 0.92) : 0);
 
             return {
                 coin: coinName,
                 account: 'UNIFIED',
                 total: total,
                 free: free,
-                usdValue: usdValue,
+                eurValue: eurValue,
                 currentPrice: currentPrice
             };
         });
 
+        // Filtriramo aktivne pozicije (kovanci, ki niso gotovina in imajo vrednost)
         const activePositions = coins.filter(c => 
-            c.coin !== 'USDT' && c.coin !== 'EUR' && c.coin !== 'USDC' && c.total > 0.00001 && c.usdValue > 0.5
+            c.coin !== 'USDT' && c.coin !== 'EUR' && c.coin !== 'USDC' && c.total > 0.00001 && c.eurValue > 0.2
         ).map(c => {
             const pairUsdt = c.coin + 'USDT';
             const pairEur = c.coin + 'EUR';
@@ -124,13 +130,14 @@ app.post('/api/balance', async (req, res) => {
                 symbol: symbol,
                 coin: c.coin,
                 size: c.total,
-                usdValue: c.usdValue,
+                eurValue: c.eurValue,
                 currentPrice: c.currentPrice
             };
         });
 
         return ok(res, { 
-            totalEquity: num(r.result?.list?.[0]?.totalEquity), 
+            totalEquity: totalEquityEur, 
+            currency: 'EUR',
             coins, 
             activePositions 
         });
@@ -222,7 +229,7 @@ app.post('/api/trade', async (req, res) => {
 
             const minOrderAmt = num(lotFilter?.minOrderAmt || '1');
             if (finalAmount < minOrderAmt) {
-                return fail(res, -433, `Vneseni znesek je prenizek. Minimum je ${minOrderAmt}.`);
+                return fail(res, -433, `Vneseni znesek je prenizek. Bybit minimum za ta par je ${minOrderAmt}.`);
             }
 
             const qtyQuote = floorToStep(finalAmount, lotFilter?.quotePrecision || '0.01');
